@@ -41,7 +41,7 @@ async def analyze_with_vision(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
 
     try:
-        image_url = f"http://localhost:8000/images/{file.filename}"  # 部署时替换为公网地址
+        image_url = f"https://yi-t31x.onrender.com/images/{file.filename}"  # 部署时替换为公网地址
 
         prompt = """
 
