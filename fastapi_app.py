@@ -30,7 +30,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def get_uploaded_image(filename: str):
     return FileResponse(path=os.path.join(UPLOAD_DIR, filename))
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def home():
     return {"message": "🎉 Selfy AI 易经分析接口已上线！请通过 POST /upload/ 上传图片。"}
 
