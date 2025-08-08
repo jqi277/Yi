@@ -30,6 +30,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 async def get_uploaded_image(filename: str):
     return FileResponse(path=os.path.join(UPLOAD_DIR, filename))
 
+@app.get("/")
+def home():
+    return {"message": "🎉 Selfy AI 易经分析接口已上线！请通过 POST /upload/ 上传图片。"}
+
 @app.post("/upload/")
 async def analyze_with_vision(file: UploadFile = File(...)):
     save_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -40,10 +44,6 @@ async def analyze_with_vision(file: UploadFile = File(...)):
         image_url = f"http://localhost:8000/images/{file.filename}"  # 部署时替换为公网地址
 
         prompt = """
-
-@app.get("/")
-def home():
-    return {"message": "🎉 Selfy AI 易经分析接口已上线！请通过 POST /upload/ 上传图片。"}
 
 你是一位结合《易经》六十四卦、五行、象数、心理学与图像观察的智慧分析师。
 请你根据用户上传的照片，结合其神情、面部结构、姿态、气场，参考易经卦象与象义进行分析。
