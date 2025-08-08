@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 import shutil, os
 from dotenv import load_dotenv
 import openai
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv(dotenv_path=".env")
 
@@ -26,9 +27,7 @@ app.add_middleware(
 UPLOAD_DIR = "uploaded_photos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@app.get("/images/{filename}")
-async def get_uploaded_image(filename: str):
-    return FileResponse(path=os.path.join(UPLOAD_DIR, filename))
+app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def home():
