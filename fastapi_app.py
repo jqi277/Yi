@@ -1,49 +1,33 @@
-# 📌 Selfy AI 易经分析说明文案
-# 本系统结合现代AI图像理解与传统易经智慧，直接将用户上传的照片交由 GPT-4o 视觉模型解读，
-# 提取面部与姿态特征，结合《易经》象数理占推演性格、事业与情感分析。
-
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import shutil, os
-from dotenv import load_dotenv
-import openai
-from fastapi.staticfiles import StaticFiles
-
-load_dotenv(dotenv_path=".env")
-
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+import os, shutil
+# ... 省略不变的 import 与初始化 ...
 
 UPLOAD_DIR = "uploaded_photos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# 静态文件挂载（已在你代码里）
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def home():
-    return {"message": "🎉 Selfy AI 易经分析接口已上线！请通过 POST /upload/ 上传图片。"}
+    return {"message": "🎉 Selfy AI 易经分析接口已上线！请通过 POST /upload 上传图片。"}
 
+# ✅ 同时支持 /upload 与 /upload/
+@app.post("/upload")
 @app.post("/upload/")
-async def analyze_with_vision(file: UploadFile = File(...)):
+async def analyze_with_vision(request: Request, file: UploadFile = File(...)):
+    # 保存上传文件
     save_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    try:
-        image_url = f"https://yi-t31x.onrender.com/images/{file.filename}"  # 部署时替换为公网地址
+    # ✅ 动态生成公网图片 URL（不再写死 localhost 或固定域名）
+    image_url = str(request.url_for("images", path=file.filename))
 
-        prompt = """
-
+    prompt = """
 你是一位结合《易经》六十四卦、五行、象数、心理学与图像观察的智慧分析师。
 请你根据用户上传的照片，结合其神情、面部结构、姿态、气场，参考易经卦象与象义进行分析。
 
@@ -60,28 +44,22 @@ async def analyze_with_vision(file: UploadFile = File(...)):
 - 提供简洁而富象意的总结
 """
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "你是一位融合传统易经与现代图像观察的分析师，专精六十四卦、五行哲理与心理解读。"},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt.strip()},
-                        {"type": "image_url", "image_url": {"url": image_url}}
-                    ]
-                }
-            ],
-            max_tokens=1200,
-            temperature=0.9
-        )
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "你是一位融合传统易经与现代图像观察的分析师，专精六十四卦、五行哲理与心理解读。"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt.strip()},
+                    {"type": "image_url", "image_url": {"url": image_url}}
+                ]
+            }
+        ],
+        max_tokens=1200,
+        temperature=0.9
+    )
 
-        result = response.choices[0].message.content.strip()
-
-        return {
-            "analysis": result.split("\n"),
-            "hexagrams": "由 GPT-4o 自动生成的卦象分析"
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
+    result = response.choices[0].message.content.strip()
+    return {"analysis": [line for line in result.split("\n") if line.strip()],
+            "hexagrams": "由 GPT-4o 自动生成的卦象分析"}
