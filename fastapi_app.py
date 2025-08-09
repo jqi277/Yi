@@ -20,7 +20,7 @@ from openai import OpenAI
 from PIL import Image
 
 # ---------------- 初始化 ----------------
-app = FastAPI(title="Selfy AI API", version="0.2.3")
+app = FastAPI(title="Selfy AI API", version="0.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,10 +38,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("selfy")
 
-# 静态文件挂载（供前端直接访问图片）
+# 静态文件（给前端看图用，不再给 OpenAI 抓）
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
-# ---------------- 数据模型 ----------------
+# ---------------- 数据模型（输出结构） ----------------
 class IChingAnalysis(BaseModel):
     hexagram: str                 # 卦名
     hexagram_number: int          # 1~64
@@ -91,8 +91,7 @@ def check_api_key(x_api_key: Optional[str]) -> None:
 
 def file_to_data_url(path: str, max_side: int = 1600, quality: int = 85) -> str:
     """
-    读取本地图片，做一次轻压缩（最长边不超过 max_side，JPEG 质量 quality），
-    返回 data:image/jpeg;base64,... 的 Data URL，用于 OpenAI 视觉输入。
+    读取本地图片，轻压缩 -> data URL（避免外链超时）
     """
     with Image.open(path) as im:
         im = im.convert("RGB")
@@ -105,42 +104,22 @@ def file_to_data_url(path: str, max_side: int = 1600, quality: int = 85) -> str:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/jpeg;base64,{b64}"
 
-def extract_json_str(text: str) -> str:
+def call_openai_with_retry(payload: dict, retries: int = 1, backoff: float = 0.8):
     """
-    从模型返回里尽量提取纯 JSON：
-    - 去掉 ```json/``` 代码块包裹
-    - 去掉前后空白
-    - 截取第一个 '{' 到最后一个 '}' 的子串
-    失败则抛出 ValueError
+    payload 示例：
+      {
+        "messages": [...],
+        "model": "gpt-4o",
+        "temperature": 0.1,
+        "tools": [...],
+        "tool_choice": {"type":"function","function":{"name":"submit_analysis"}}
+      }
     """
-    if not text:
-        raise ValueError("empty content")
-    s = text.strip()
-
-    # 去代码围栏
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
-        s = re.sub(r"\s*```$", "", s).strip()
-
-    start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("no-brace-json")
-    return s[start:end+1]
-
-def call_openai_with_retry(messages, model="gpt-4o", temperature=0.2, retries: int = 1, backoff: float = 0.8):
-    """
-    对 OpenAI 调用做一次轻量重试（默认重试 1 次，退避 backoff 秒）
-    """
-    client = OpenAI()  # OPENAI_API_KEY 从环境变量读取
+    client = OpenAI()  # 读取 OPENAI_API_KEY
     last_err = None
     for attempt in range(retries + 1):
         try:
-            return client.chat.completions.create(
-                model=model,
-                temperature=temperature,
-                messages=messages,
-            )
+            return client.chat.completions.create(**payload)
         except Exception as e:
             last_err = e
             if attempt < retries:
@@ -194,20 +173,16 @@ async def analyze_with_vision(
         raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
     filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)  # 方便前端直接查看
-    data_url = file_to_data_url(save_path)           # ✅ 提供给 OpenAI，避免外链超时
+    public_url = build_image_url(request, filename)  # 仅供前端查看
+    data_url = file_to_data_url(save_path)           # ✅ 发给 OpenAI
 
-    # 结构化提示
+    # ---- System / User 提示（简洁）----
     system_prompt = (
-        "你是《易经》面相与五官关系的专业分析师。"
-        "仅基于面部结构（忽略背景/服饰/灯光），"
-        "从五官比例、对称性、骨量与肉量、眉眼口鼻关系、神态等抽象线索，"
-        "映射到最贴切的一卦（1~64），可含变爻。"
-        "务必只返回 JSON，字段：hexagram, hexagram_number, changing_lines, confidence, cues, advice, domains。"
-        "避免任何基于健康/种族/性别的偏见描述。"
-        "只输出原始 JSON，不得包含代码块标记或任何说明文本。"
+        "你是《易经》面相与五官关系的专业分析师。仅基于面部结构（忽略背景/服饰/灯光），"
+        "从五官比例、对称性、骨量与肉量、眉眼口鼻关系、神态等抽象线索映射到最贴切的一卦（1~64），可含变爻。"
+        "必须通过函数（tools）提交结果，严禁输出除函数参数外的任何文本。避免健康/种族/性别偏见。"
     )
-    user_prompt = "只返回 JSON，不要多余文本。若不确定也要给出 best-effort JSON，并降低 confidence。"
+    user_prompt = "请按函数 schema 返回严谨 JSON 参数，不要输出普通文本。"
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -220,20 +195,70 @@ async def analyze_with_vision(
         },
     ]
 
-    try:
-        # 带重试的 OpenAI 调用（默认重试 1 次）
-        resp = call_openai_with_retry(messages, retries=1)
-        raw = (resp.choices[0].message.content or "").strip()
-        logger.info("LLM raw length=%s", len(raw))
+    # ---- 定义函数（工具）Schema，强制结构化 ----
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_analysis",
+                "description": "提交严格结构化的易经分析结果",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "hexagram": {"type": "string"},
+                        "hexagram_number": {"type": "integer", "minimum": 1, "maximum": 64},
+                        "changing_lines": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 1, "maximum": 6},
+                            "default": []
+                        },
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "cues": {"type": "array", "items": {"type": "string"}},
+                        "advice": {"type": "string"},
+                        "domains": {
+                            "type": "object",
+                            "properties": {
+                                "金钱与事业": {"type": "string"},
+                                "配偶与感情": {"type": "string"}
+                            },
+                            "required": ["金钱与事业", "配偶与感情"]
+                        }
+                    },
+                    "required": ["hexagram", "hexagram_number", "changing_lines", "confidence", "cues", "advice", "domains"],
+                    "additionalProperties": False
+                },
+            },
+        }
+    ]
 
+    # ---- 强制调用该函数并解析参数 ----
+    try:
+        resp = call_openai_with_retry(
+            {
+                "messages": messages,
+                "model": "gpt-4o",
+                "temperature": 0.1,
+                "tools": tools,
+                "tool_choice": {"type": "function", "function": {"name": "submit_analysis"}},
+            },
+            retries=1,
+        )
+
+        choice = resp.choices[0]
+        tool_calls = getattr(choice.message, "tool_calls", None)
+        if not tool_calls or tool_calls[0].function.name != "submit_analysis":
+            logger.error("No tool call returned. raw=%r", getattr(choice.message, "content", "")[:200])
+            raise HTTPException(status_code=502, detail="Vision error: tool call missing")
+
+        args_str = tool_calls[0].function.arguments or "{}"
         try:
-            json_str = extract_json_str(raw)
-            data = orjson.loads(json_str)
+            data = orjson.loads(args_str)
         except Exception as e:
-            logger.error("JSON parse failed: %s ; head=%r", e, raw[:200])
-            raise HTTPException(status_code=502, detail="Vision error: invalid JSON from model")
+            logger.error("Tool JSON parse failed: %s ; head=%r", e, args_str[:200])
+            raise HTTPException(status_code=502, detail="Vision error: invalid tool JSON")
 
         result = IChingAnalysis.model_validate(data)
+
     except HTTPException:
         raise
     except Exception as e:
