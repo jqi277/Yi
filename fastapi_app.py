@@ -174,7 +174,7 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
     return {
         "tool_args": args,
         "oai_raw": resp if DEBUG else None,
-    ]
+    }
 
 
 def _join_cn(items: List[str]) -> str:
