@@ -211,7 +211,7 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         out["domains"] = []
 
-    # 兜底必填
+    # —— 必填兜底 —— 
     out["summary"] = out.get("summary") or ""
     out["archetype"] = out.get("archetype") or ""
     try:
@@ -219,18 +219,97 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         out["confidence"] = 0.0
 
-    # 组合标题
-    ta_safe = {
-        "姿态": _safe_seg(ta.get("姿态")),
-        "神情": _safe_seg(ta.get("神情")),
-        "面容": _safe_seg(ta.get("面容")),
-    }
-    hexes = [ta_safe["姿态"]["卦象"], ta_safe["神情"]["卦象"], ta_safe["面容"]["卦象"]]
-    combo_title = " + ".join([h for h in hexes if h])
-    if combo_title:
-        meta["combo_title"] = combo_title
+    # === 兼容前端键名：面容 -> 面相（同时保留面容） ===
+    triple = meta.get("triple_analysis")
+    if not isinstance(triple, dict):
+        triple = {}
+    # 如果 triple 是 JSON 字符串，先解析
+    if isinstance(triple, str):
+        try:
+            triple = json.loads(triple)
+        except Exception:
+            triple = {}
+    if not isinstance(triple, dict):
+        triple = {}
+    # 确保三象对象结构齐全
+    def _ensure_seg(o: Any) -> Dict[str, Any]:
+        if isinstance(o, str):
+            try:
+                o = json.loads(o)
+            except Exception:
+                o = {}
+        if not isinstance(o, dict):
+            o = {}
+        return {
+            "说明": o.get("说明") or "",
+            "卦象": o.get("卦象") or "",
+            "解读": o.get("解读") or "",
+            "性格倾向": o.get("性格倾向") or "",
+        }
+
+    triple["姿态"] = _ensure_seg(triple.get("姿态"))
+    triple["神情"] = _ensure_seg(triple.get("神情"))
+    # 面容/面相兼容：两者任一存在就互相补
+    face_seg = triple.get("面容") or triple.get("面相") or {}
+    face_seg = _ensure_seg(face_seg)
+    triple["面容"] = face_seg
+    triple["面相"] = dict(face_seg)  # 给前端老模板
+
+    # 组合意境 / 总结 兜底（用 sections 拼一句）
+    combo = triple.get("组合意境") or ""
+    if not combo:
+        hx = [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]]
+        hx = " + ".join([h for h in hx if h])
+        brief = "整体气质克制而有火光，外在稳、内在明，处事理性中带热度。"
+        triple["组合意境"] = f"{hx}" if hx else brief
+    if not triple.get("总结"):
+        triple["总结"] = out.get("summary") or "外在沉稳，内里有光，选择性社交。"
+
+    meta["triple_analysis"] = triple
+
+    # === 生成组合标题，供前端头图使用 ===
+    hexes = [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]]
+    meta["combo_title"] = " + ".join([h for h in hexes if h])
+
+    # === domains / domains_detail 兜底 ===
+    allowed = {"金钱与事业", "配偶与感情"}
+    domains = out.get("domains")
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            domains = []
+    if isinstance(domains, dict):
+        keys = [k for k in domains.keys() if k in allowed]
+        out["domains"] = keys
+        meta["domains_detail"] = {k: domains[k] for k in keys}
+    elif isinstance(domains, list):
+        out["domains"] = [d for d in domains if isinstance(d, str) and d in allowed]
+    else:
+        out["domains"] = []
+
+    dd = meta.get("domains_detail")
+    if isinstance(dd, str):
+        try:
+            dd = json.loads(dd)
+        except Exception:
+            dd = {}
+    if not isinstance(dd, dict):
+        dd = {}
+    # 如果前端需要两个 box 一定有文案，这里用“短建议”兜底
+    def _ensure_advice(key, fallback):
+        if key not in dd or not isinstance(dd.get(key), str) or not dd.get(key).strip():
+            dd[key] = fallback
+            if key not in out["domains"]:
+                out["domains"].append(key)
+
+    arche = out.get("archetype") or "外冷内热"
+    _ensure_advice("金钱与事业", f"{arche}：擅长独立推进与质量把控，短期重稳健现金流；建议设立节点复盘与对外协作位，避免闭环过严错失窗口。")
+    _ensure_advice("配偶与感情", f"{arche}：表冷里热，重边界与真诚；建议放缓观察周期，适度表达需求，匹配价值观与生活节奏。")
+    meta["domains_detail"] = dd
 
     return out
+
 
 
 @app.post("/upload")
