@@ -1,10 +1,10 @@
-# fastapi_app.py  (v3.4)
+# fastapi_app.py  (v3.4 - fixed)
 import os
 import base64
 import json
 import logging
 import traceback
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -54,9 +54,10 @@ def _to_data_url(content: bytes, content_type: str) -> str:
     return f"data:{content_type};base64,{b64}"
 
 
-def _build_tools_schema() -> list[dict]:
+def _build_tools_schema() -> List[Dict[str, Any]]:
     """
     工具约束为 C 端扁平结构；允许将更丰富的内容放在 meta 中。
+    （注意括号/花括号的闭合顺序，已校对）
     """
     return [
         {
@@ -78,28 +79,28 @@ def _build_tools_schema() -> list[dict]:
                                 "面相": {"type": "string"},
                             },
                             "required": ["姿态", "神情", "面相"],
-                            "additionalProperties": False
+                            "additionalProperties": False,
                         },
                         "domains": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Only from ['金钱与事业','配偶与感情']"
+                            "description": "Only from ['金钱与事业','配偶与感情']",
                         },
                         "meta": {
                             "type": "object",
                             "description": "Optional metadata for debugging or triple-analysis rich content",
-                            "additionalProperties": True
-                        }
+                            "additionalProperties": True,
+                        },
                     },
                     "required": ["summary", "archetype", "confidence", "sections", "domains"],
-                    "additionalProperties": False
-                }
-            }
+                    "additionalProperties": False,
+                },
+            },
         }
     ]
 
 
-def _prompt_for_image() -> list[dict]:
+def _prompt_for_image() -> List[Dict[str, Any]]:
     """
     三象拆分法：姿态 / 神情 / 环境 → 卦象组合 → 总结
     保持对外 JSON 扁平，细节放 meta.triple_analysis。
@@ -172,7 +173,7 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
 
     return {
         "tool_args": args,
-        "oai_raw": resp if DEBUG else None
+        "oai_raw": resp if DEBUG else None,
     ]
 
 
@@ -247,7 +248,6 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     # 自动补 meta.triple_analysis（如果缺失）
     triple = meta.get("triple_analysis")
     if not isinstance(triple, dict):
-        # 可以根据 sections_detail 粗构
         sd = meta.get("sections_detail") or {}
         if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情"]):
             def _mk(seg):
@@ -261,8 +261,8 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
             triple = {
                 "姿态": _mk("姿态"),
                 "神情": _mk("神情"),
-                "环境": _mk("环境"),  # 可能为空
-                "组合意境": "",       # 无从推断则置空
+                "环境": _mk("环境"),
+                "组合意境": "",
                 "总结": out.get("summary", ""),
             }
             meta["triple_analysis"] = triple
