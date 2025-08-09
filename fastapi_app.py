@@ -1,14 +1,13 @@
-# fastapi_app.py
 import os
 import re
 import uuid
 import shutil
 import time
 import logging
+import base64
+from io import BytesIO
 from typing import Optional, List, Dict
 
-import requests
-from requests.exceptions import RequestException
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
@@ -17,9 +16,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 import orjson
 from openai import OpenAI
+from PIL import Image
 
 # ---------------- 初始化 ----------------
-app = FastAPI(title="Selfy AI API", version="0.2.1")
+app = FastAPI(title="Selfy AI API", version="0.2.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +37,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("selfy")
 
-# 静态文件挂载
+# 静态文件挂载（供前端直接访问图片）
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
 # ---------------- 数据模型 ----------------
@@ -89,21 +89,21 @@ def check_api_key(x_api_key: Optional[str]) -> None:
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-def wait_until_public(url: str, timeout_total: float = 4.0, step: float = 0.4) -> None:
+def file_to_data_url(path: str, max_side: int = 1600, quality: int = 85) -> str:
     """
-    轮询公网上是否能 GET 到图片。用于避免 OpenAI 'Timeout while downloading'。
-    总等待 <= timeout_total。用 GET（非 HEAD）以确保真实可读。
+    读取本地图片，做一次轻压缩（最长边不超过 max_side，JPEG 质量 quality），
+    返回 data:image/jpeg;base64,... 的 Data URL，用于 OpenAI 视觉输入。
     """
-    deadline = time.time() + timeout_total
-    while time.time() < deadline:
-        try:
-            r = requests.get(url, timeout=(1.0, 2.5))  # 连接1s，读取2.5s
-            if r.status_code == 200 and int(r.headers.get("Content-Length", "1")) > 0:
-                return
-        except RequestException:
-            pass
-        time.sleep(step)
-    # 不抛错，后续还有 OpenAI 重试；你也可改成直接 503 更显性
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        w, h = im.size
+        scale = min(1.0, max_side / float(max(w, h)))
+        if scale < 1.0:
+            im = im.resize((int(w * scale), int(h * scale)))
+        buf = BytesIO()
+        im.save(buf, format="JPEG", quality=quality, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
 
 def call_openai_with_retry(messages, model="gpt-4o", temperature=0.3, retries: int = 1, backoff: float = 0.8):
     """
@@ -171,10 +171,8 @@ async def analyze_with_vision(
         raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
     filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)
-
-    # 关键：OpenAI 调用前预热图片（避免 timeout while downloading）
-    wait_until_public(public_url)
+    public_url = build_image_url(request, filename)  # 用于前端直接查看
+    data_url = file_to_data_url(save_path)           # ✅ 提供给 OpenAI，避免外链超时
 
     # 结构化提示
     system_prompt = (
@@ -193,7 +191,8 @@ async def analyze_with_vision(
             "role": "user",
             "content": [
                 {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": public_url}},
+                # 关键：用 data_url，而不是公网 URL
+                {"type": "image_url", "image_url": {"url": data_url}},
             ],
         },
     ]
