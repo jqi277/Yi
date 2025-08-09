@@ -20,7 +20,7 @@ from openai import OpenAI
 from PIL import Image
 
 # ---------------- 初始化 ----------------
-app = FastAPI(title="Selfy AI API", version="0.3.0")
+app = FastAPI(title="Selfy AI API", version="0.3.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,18 +38,28 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("selfy")
 
-# 静态文件（给前端看图用，不再给 OpenAI 抓）
+# 静态文件（给前端查看用，不再给 OpenAI 抓）
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
-# ---------------- 数据模型（输出结构） ----------------
-class IChingAnalysis(BaseModel):
-    hexagram: str                 # 卦名
-    hexagram_number: int          # 1~64
-    changing_lines: List[int]     # 变爻（可空列表）
-    confidence: float             # 0~1
-    cues: List[str]               # 触发线索
-    advice: str                   # 总体建议
-    domains: Dict[str, str]       # {"金钱与事业": "...", "配偶与感情": "..."}
+# ---------------- 数据模型（v3 对外友好结构） ----------------
+class SimpleSection(BaseModel):
+    features: List[str]   # 观察到的客观特征
+    hexagram: str         # 只写卦名（兑/离/艮等），不出现“爻”等术语
+    meaning: str          # 卦义对应的人话解释
+    advice: str           # 小建议
+
+class SimpleSections(BaseModel):
+    姿态: SimpleSection
+    神情: SimpleSection
+    面相: SimpleSection    # ← 五官 改名为 面相
+
+class IChingSimple(BaseModel):
+    summary: str          # 一句话总结（人类可读）
+    archetype: str        # 2~5字意象标签（如：外冷内热）
+    confidence: float     # 0~1
+    sections: SimpleSections
+    domains: Dict[str, str]  # {"金钱与事业": "...", "配偶与感情": "..."}
+    meta: Optional[Dict] = None  # 可选：内部统计（主卦/编号/变爻）
 
     @field_validator("confidence")
     @classmethod
@@ -112,7 +122,7 @@ def call_openai_with_retry(payload: dict, retries: int = 1, backoff: float = 0.8
         "model": "gpt-4o",
         "temperature": 0.1,
         "tools": [...],
-        "tool_choice": {"type":"function","function":{"name":"submit_analysis"}}
+        "tool_choice": {"type":"function","function":{"name":"submit_analysis_v3"}}
       }
     """
     client = OpenAI()  # 读取 OPENAI_API_KEY
@@ -144,7 +154,7 @@ def health():
 def version():
     return {"version": app.version}
 
-# ---------------- 上传并分析 ----------------
+# ---------------- 上传并分析（v3） ----------------
 @app.post("/upload")
 @app.post("/upload/")
 async def analyze_with_vision(
@@ -173,16 +183,19 @@ async def analyze_with_vision(
         raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
     filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)  # 仅供前端查看
-    data_url = file_to_data_url(save_path)           # ✅ 发给 OpenAI
+    public_url = build_image_url(request, filename)  # 给前端看
+    data_url = file_to_data_url(save_path)           # 给 OpenAI 用
 
-    # ---- System / User 提示（简洁）----
+    # ---- System / User 提示（对外友好，不出现“变爻/爻辞”等术语）----
     system_prompt = (
-        "你是《易经》面相与五官关系的专业分析师。仅基于面部结构（忽略背景/服饰/灯光），"
-        "从五官比例、对称性、骨量与肉量、眉眼口鼻关系、神态等抽象线索映射到最贴切的一卦（1~64），可含变爻。"
-        "必须通过函数（tools）提交结果，严禁输出除函数参数外的任何文本。避免健康/种族/性别偏见。"
+        "你是《易经》面部观照的专业分析师。仅基于人物本身（忽略服饰/背景/灯光），"
+        "按【姿态、神情、面相】三项输出：每项包含 features（客观特征）、卦名 hexagram（只写卦名）、"
+        "meaning（简明含义）、advice（小建议）。"
+        "生成一句 summary 与 2~5 字 archetype（意象标签）。"
+        "面向普通用户，不使用“主卦”“爻”等术语；如需统计，把主卦编号与变爻写入 meta（可选），界面不展示。"
+        "严格通过函数（tools）提交结果，禁止输出其它文本。避免健康/种族/性别偏见。"
     )
-    user_prompt = "请按函数 schema 返回严谨 JSON 参数，不要输出普通文本。"
+    user_prompt = "请按函数 schema 返回严谨的 JSON 参数；只写卦名，不出现爻位术语。"
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -195,43 +208,88 @@ async def analyze_with_vision(
         },
     ]
 
-    # ---- 定义函数（工具）Schema，强制结构化 ----
+    # ---- 函数（tools）Schema：submit_analysis_v3 ----
     tools = [
         {
             "type": "function",
             "function": {
-                "name": "submit_analysis",
-                "description": "提交严格结构化的易经分析结果",
+                "name": "submit_analysis_v3",
+                "description": "提交面向普通用户可读的易经分析（姿态/神情/面相 + 总结与分域）",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "hexagram": {"type": "string"},
-                        "hexagram_number": {"type": "integer", "minimum": 1, "maximum": 64},
-                        "changing_lines": {
-                            "type": "array",
-                            "items": {"type": "integer", "minimum": 1, "maximum": 6},
-                            "default": []
+                        "summary": { "type": "string" },
+                        "archetype": { "type": "string", "description": "2~5字意象标签，如：外冷内热" },
+                        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+
+                        "sections": {
+                            "type": "object",
+                            "properties": {
+                                "姿态": {
+                                    "type": "object",
+                                    "properties": {
+                                        "features": { "type": "array", "items": { "type": "string" } },
+                                        "hexagram": { "type": "string", "description": "只写卦名，如 兑/离/艮..." },
+                                        "meaning": { "type": "string" },
+                                        "advice": { "type": "string" }
+                                    },
+                                    "required": ["features", "hexagram", "meaning", "advice"]
+                                },
+                                "神情": {
+                                    "type": "object",
+                                    "properties": {
+                                        "features": { "type": "array", "items": { "type": "string" } },
+                                        "hexagram": { "type": "string" },
+                                        "meaning": { "type": "string" },
+                                        "advice": { "type": "string" }
+                                    },
+                                    "required": ["features", "hexagram", "meaning", "advice"]
+                                },
+                                "面相": {
+                                    "type": "object",
+                                    "properties": {
+                                        "features": { "type": "array", "items": { "type": "string" } },
+                                        "hexagram": { "type": "string" },
+                                        "meaning": { "type": "string" },
+                                        "advice": { "type": "string" }
+                                    },
+                                    "required": ["features", "hexagram", "meaning", "advice"]
+                                }
+                            },
+                            "required": ["姿态", "神情", "面相"],
+                            "additionalProperties": false
                         },
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "cues": {"type": "array", "items": {"type": "string"}},
-                        "advice": {"type": "string"},
+
                         "domains": {
                             "type": "object",
                             "properties": {
-                                "金钱与事业": {"type": "string"},
-                                "配偶与感情": {"type": "string"}
+                                "金钱与事业": { "type": "string" },
+                                "配偶与感情": { "type": "string" }
                             },
                             "required": ["金钱与事业", "配偶与感情"]
+                        },
+
+                        "meta": {
+                            "type": "object",
+                            "properties": {
+                                "hexagram": { "type": "string" },
+                                "hexagram_number": { "type": "integer", "minimum": 1, "maximum": 64 },
+                                "changing_lines": {
+                                    "type": "array",
+                                    "items": { "type": "integer", "minimum": 1, "maximum": 6 }
+                                }
+                            },
+                            "additionalProperties": false
                         }
                     },
-                    "required": ["hexagram", "hexagram_number", "changing_lines", "confidence", "cues", "advice", "domains"],
-                    "additionalProperties": False
-                },
-            },
+                    "required": ["summary", "archetype", "confidence", "sections", "domains"],
+                    "additionalProperties": false
+                }
+            }
         }
     ]
 
-    # ---- 强制调用该函数并解析参数 ----
+    # ---- 调用并解析 ----
     try:
         resp = call_openai_with_retry(
             {
@@ -239,14 +297,14 @@ async def analyze_with_vision(
                 "model": "gpt-4o",
                 "temperature": 0.1,
                 "tools": tools,
-                "tool_choice": {"type": "function", "function": {"name": "submit_analysis"}},
+                "tool_choice": {"type": "function", "function": {"name": "submit_analysis_v3"}},
             },
             retries=1,
         )
 
         choice = resp.choices[0]
         tool_calls = getattr(choice.message, "tool_calls", None)
-        if not tool_calls or tool_calls[0].function.name != "submit_analysis":
+        if not tool_calls or tool_calls[0].function.name != "submit_analysis_v3":
             logger.error("No tool call returned. raw=%r", getattr(choice.message, "content", "")[:200])
             raise HTTPException(status_code=502, detail="Vision error: tool call missing")
 
@@ -257,7 +315,7 @@ async def analyze_with_vision(
             logger.error("Tool JSON parse failed: %s ; head=%r", e, args_str[:200])
             raise HTTPException(status_code=502, detail="Vision error: invalid tool JSON")
 
-        result = IChingAnalysis.model_validate(data)
+        result = IChingSimple.model_validate(data)
 
     except HTTPException:
         raise
