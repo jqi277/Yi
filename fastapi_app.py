@@ -1,3 +1,4 @@
+# fastapi_app.py
 import os
 import re
 import uuid
@@ -19,7 +20,7 @@ from openai import OpenAI
 from PIL import Image
 
 # ---------------- 初始化 ----------------
-app = FastAPI(title="Selfy AI API", version="0.2.2")
+app = FastAPI(title="Selfy AI API", version="0.2.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,7 +76,6 @@ def ensure_unique_path(dir_: str, name: str) -> str:
     return os.path.join(dir_, cand)
 
 def get_absolute_base_url(request: Request) -> str:
-    # Render 场景：优先 BASE_URL；否则用代理头推断 https
     if BASE_URL:
         return BASE_URL.rstrip("/")
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
@@ -105,7 +105,30 @@ def file_to_data_url(path: str, max_side: int = 1600, quality: int = 85) -> str:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/jpeg;base64,{b64}"
 
-def call_openai_with_retry(messages, model="gpt-4o", temperature=0.3, retries: int = 1, backoff: float = 0.8):
+def extract_json_str(text: str) -> str:
+    """
+    从模型返回里尽量提取纯 JSON：
+    - 去掉 ```json/``` 代码块包裹
+    - 去掉前后空白
+    - 截取第一个 '{' 到最后一个 '}' 的子串
+    失败则抛出 ValueError
+    """
+    if not text:
+        raise ValueError("empty content")
+    s = text.strip()
+
+    # 去代码围栏
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z]*\s*", "", s)
+        s = re.sub(r"\s*```$", "", s).strip()
+
+    start = s.find("{")
+    end = s.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no-brace-json")
+    return s[start:end+1]
+
+def call_openai_with_retry(messages, model="gpt-4o", temperature=0.2, retries: int = 1, backoff: float = 0.8):
     """
     对 OpenAI 调用做一次轻量重试（默认重试 1 次，退避 backoff 秒）
     """
@@ -171,7 +194,7 @@ async def analyze_with_vision(
         raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
     filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)  # 用于前端直接查看
+    public_url = build_image_url(request, filename)  # 方便前端直接查看
     data_url = file_to_data_url(save_path)           # ✅ 提供给 OpenAI，避免外链超时
 
     # 结构化提示
@@ -182,6 +205,7 @@ async def analyze_with_vision(
         "映射到最贴切的一卦（1~64），可含变爻。"
         "务必只返回 JSON，字段：hexagram, hexagram_number, changing_lines, confidence, cues, advice, domains。"
         "避免任何基于健康/种族/性别的偏见描述。"
+        "只输出原始 JSON，不得包含代码块标记或任何说明文本。"
     )
     user_prompt = "只返回 JSON，不要多余文本。若不确定也要给出 best-effort JSON，并降低 confidence。"
 
@@ -191,7 +215,6 @@ async def analyze_with_vision(
             "role": "user",
             "content": [
                 {"type": "text", "text": user_prompt},
-                # 关键：用 data_url，而不是公网 URL
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
         },
@@ -200,9 +223,19 @@ async def analyze_with_vision(
     try:
         # 带重试的 OpenAI 调用（默认重试 1 次）
         resp = call_openai_with_retry(messages, retries=1)
-        raw = resp.choices[0].message.content or "{}"
-        data = orjson.loads(raw)  # 容错解析
-        result = IChingAnalysis.model_validate(data)  # 结构校验
+        raw = (resp.choices[0].message.content or "").strip()
+        logger.info("LLM raw length=%s", len(raw))
+
+        try:
+            json_str = extract_json_str(raw)
+            data = orjson.loads(json_str)
+        except Exception as e:
+            logger.error("JSON parse failed: %s ; head=%r", e, raw[:200])
+            raise HTTPException(status_code=502, detail="Vision error: invalid JSON from model")
+
+        result = IChingAnalysis.model_validate(data)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("OpenAI vision failed")
         raise HTTPException(status_code=502, detail=f"Vision error: {e}")
