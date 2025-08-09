@@ -3,9 +3,12 @@ import os
 import re
 import uuid
 import shutil
+import time
 import logging
 from typing import Optional, List, Dict
 
+import requests
+from requests.exceptions import RequestException
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
@@ -13,21 +16,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 import orjson
+from openai import OpenAI
 
-# ---- 初始化应用（必须先于 app.mount/路由定义）----
-app = FastAPI(title="Selfy AI API", version="0.2.0")
+# ---------------- 初始化 ----------------
+app = FastAPI(title="Selfy AI API", version="0.2.1")
 
-# CORS（看你需求，默认全开，前端调试方便）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"],
 )
 
-# ---- 环境 & 日志 ----
 load_dotenv()
 API_KEY = os.getenv("API_KEY", "").strip()
-BASE_URL = os.getenv("BASE_URL", "").strip()  # 可选：固定你的 https 域名
+BASE_URL = os.getenv("BASE_URL", "").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
 UPLOAD_DIR = "uploaded_photos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -35,17 +37,17 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("selfy")
 
-# ---- 静态图片挂载（/images/xxx.jpg）----
+# 静态文件挂载
 app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
 
-# ---- 输出结构（严格 JSON）----
+# ---------------- 数据模型 ----------------
 class IChingAnalysis(BaseModel):
-    hexagram: str                 # 卦名，如「乾」「坤」「既济」...
-    hexagram_number: int          # 卦序 1~64
-    changing_lines: List[int]     # 变爻（1~6），无则 []
+    hexagram: str                 # 卦名
+    hexagram_number: int          # 1~64
+    changing_lines: List[int]     # 变爻（可空列表）
     confidence: float             # 0~1
-    cues: List[str]               # 触发该判断的五官/面相线索
-    advice: str                   # 总体建议（面向用户）
+    cues: List[str]               # 触发线索
+    advice: str                   # 总体建议
     domains: Dict[str, str]       # {"金钱与事业": "...", "配偶与感情": "..."}
 
     @field_validator("confidence")
@@ -53,6 +55,7 @@ class IChingAnalysis(BaseModel):
     def _clip_conf(cls, v: float) -> float:
         return max(0.0, min(1.0, float(v)))
 
+# ---------------- 工具函数 ----------------
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 def sanitize_filename(name: str) -> str:
@@ -72,9 +75,7 @@ def ensure_unique_path(dir_: str, name: str) -> str:
     return os.path.join(dir_, cand)
 
 def get_absolute_base_url(request: Request) -> str:
-    """
-    Render 反代场景：优先 BASE_URL；否则从 X-Forwarded-* 推断 https 域名
-    """
+    # Render 场景：优先 BASE_URL；否则用代理头推断 https
     if BASE_URL:
         return BASE_URL.rstrip("/")
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
@@ -88,10 +89,50 @@ def check_api_key(x_api_key: Optional[str]) -> None:
     if API_KEY and x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-# ---- 健康/版本/根路由 ----
-@app.api_route("/", methods=["GET", "HEAD"])
-def root():
+def wait_until_public(url: str, timeout_total: float = 4.0, step: float = 0.4) -> None:
+    """
+    轮询公网上是否能 GET 到图片。用于避免 OpenAI 'Timeout while downloading'。
+    总等待 <= timeout_total。用 GET（非 HEAD）以确保真实可读。
+    """
+    deadline = time.time() + timeout_total
+    while time.time() < deadline:
+        try:
+            r = requests.get(url, timeout=(1.0, 2.5))  # 连接1s，读取2.5s
+            if r.status_code == 200 and int(r.headers.get("Content-Length", "1")) > 0:
+                return
+        except RequestException:
+            pass
+        time.sleep(step)
+    # 不抛错，后续还有 OpenAI 重试；你也可改成直接 503 更显性
+
+def call_openai_with_retry(messages, model="gpt-4o", temperature=0.3, retries: int = 1, backoff: float = 0.8):
+    """
+    对 OpenAI 调用做一次轻量重试（默认重试 1 次，退避 backoff 秒）
+    """
+    client = OpenAI()  # OPENAI_API_KEY 从环境变量读取
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                temperature=temperature,
+                messages=messages,
+            )
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+            else:
+                raise last_err
+
+# ---------------- 根/健康/版本 ----------------
+@app.get("/", operation_id="root_get")
+def root_get():
     return {"message": "🎉 Selfy AI 易经分析接口在线。POST /upload 上传图片。"}
+
+@app.head("/", include_in_schema=False)
+def root_head():
+    return {"message": "ok"}
 
 @app.get("/health")
 def health():
@@ -101,12 +142,7 @@ def health():
 def version():
     return {"version": app.version}
 
-# ---- OpenAI 客户端 ----
-# 需要 requirements: openai>=1.30
-from openai import OpenAI
-client = OpenAI()  # OPENAI_API_KEY 从环境获得（Render 上配置）
-
-# ---- 上传并分析（同时支持 /upload 与 /upload/）----
+# ---------------- 上传并分析 ----------------
 @app.post("/upload")
 @app.post("/upload/")
 async def analyze_with_vision(
@@ -114,10 +150,10 @@ async def analyze_with_vision(
     file: UploadFile = File(...),
     x_api_key: Optional[str] = Header(default=None),
 ):
-    # 简单鉴权（可在 .env 置空 API_KEY 关闭）
+    # 鉴权（可选）
     check_api_key(x_api_key)
 
-    # 基本校验
+    # 校验
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=415, detail="Only image/* is supported.")
     size_header = request.headers.get("content-length")
@@ -135,38 +171,36 @@ async def analyze_with_vision(
         raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
     filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)  # 确保是 https 外链
+    public_url = build_image_url(request, filename)
 
-    # 结构化提示（严格 JSON 输出）
+    # 关键：OpenAI 调用前预热图片（避免 timeout while downloading）
+    wait_until_public(public_url)
+
+    # 结构化提示
     system_prompt = (
         "你是《易经》面相与五官关系的专业分析师。"
         "仅基于面部结构（忽略背景/服饰/灯光），"
-        "从五官比例、对称性、骨量与肉量、眉眼口鼻的关系、"
-        "神态等抽象出稳定的人格与运势线索，"
-        "并据此映射到最贴切的一卦（1~64），可含变爻。"
+        "从五官比例、对称性、骨量与肉量、眉眼口鼻关系、神态等抽象线索，"
+        "映射到最贴切的一卦（1~64），可含变爻。"
         "务必只返回 JSON，字段：hexagram, hexagram_number, changing_lines, confidence, cues, advice, domains。"
-        "避免健康/种族/性别偏见，不输出任何个人身份信息。"
+        "避免任何基于健康/种族/性别的偏见描述。"
     )
+    user_prompt = "只返回 JSON，不要多余文本。若不确定也要给出 best-effort JSON，并降低 confidence。"
 
-    user_prompt = (
-        "只返回 JSON，不要多余文本。若不确定也要给出 best-effort JSON，并降低 confidence。"
-    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": public_url}},
+            ],
+        },
+    ]
 
     try:
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            temperature=0.3,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": {"url": public_url}},
-                    ],
-                },
-            ],
-        )
+        # 带重试的 OpenAI 调用（默认重试 1 次）
+        resp = call_openai_with_retry(messages, retries=1)
         raw = resp.choices[0].message.content or "{}"
         data = orjson.loads(raw)  # 容错解析
         result = IChingAnalysis.model_validate(data)  # 结构校验
@@ -174,15 +208,9 @@ async def analyze_with_vision(
         logger.exception("OpenAI vision failed")
         raise HTTPException(status_code=502, detail=f"Vision error: {e}")
 
-    return JSONResponse(
-        {
-            "image_url": public_url,
-            "analysis": result.model_dump(),
-        }
-    )
+    return JSONResponse({"image_url": public_url, "analysis": result.model_dump()})
 
-# ---- 可选：本地调试入口 ----
+# ---------------- 本地调试 ----------------
 if __name__ == "__main__":
     import uvicorn
-    # 本地启动：python fastapi_app.py
     uvicorn.run("fastapi_app:app", host="0.0.0.0", port=8000, reload=True)
