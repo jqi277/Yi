@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from openai import OpenAI
 
 VERSION = "3.4"
@@ -43,6 +43,16 @@ except Exception as e:
 def health():
     return {"status": "ok"}
 
+@app.get("/", include_in_schema=False)
+def root():
+    return HTMLResponse("""
+        <h3>Selfy AI - YiJing Analysis API</h3>
+        <ul>
+          <li><a href="/docs">/docs (Swagger)</a></li>
+          <li><a href="/health">/health</a></li>
+          <li><a href="/version">/version</a></li>
+        </ul>
+    """)
 
 @app.get("/version")
 def version():
