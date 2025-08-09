@@ -1,286 +1,94 @@
-# fastapi_app.py
+# fastapi_app.py  (v3.4)
 import os
-import re
-import uuid
-import shutil
-import time
-import logging
 import base64
-from io import BytesIO
-from typing import Optional, List, Dict
+import json
+import logging
+import traceback
+from typing import Optional, Dict, Any, List
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, Request, HTTPException, Header
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
-import orjson
-from openai import OpenAI
-from PIL import Image
+from fastapi.middleware.cors import CORSMiddleware
 
-# ---------------- 初始化 ----------------
-app = FastAPI(title="Selfy AI API", version="0.3.1")
+from openai import OpenAI
+
+VERSION = "3.4"
+SCHEMA_ID = "selfy.v3"
+DEBUG = str(os.getenv("DEBUG", "0")).strip() in ("1", "true", "True", "YES", "yes")
+
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("selfy-ai")
+
+app = FastAPI(title="Selfy AI - YiJing Analysis API", version=VERSION)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["*"] if DEBUG else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-load_dotenv()
-DEBUG = os.getenv("DEBUG", "0") == "1"
-API_KEY = os.getenv("API_KEY", "").strip()
-BASE_URL = os.getenv("BASE_URL", "").strip()
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
-UPLOAD_DIR = "uploaded_photos"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+try:
+    client = OpenAI()
+except Exception as e:
+    logger.error("OpenAI client init failed: %s", e)
+    client = None
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("selfy")
-
-# 静态文件（给前端查看用，不再给 OpenAI 抓）
-app.mount("/images", StaticFiles(directory=UPLOAD_DIR), name="images")
-
-# ---------------- 数据模型（v3 对外友好结构） ----------------
-class SimpleSection(BaseModel):
-    features: List[str]   # 观察到的客观特征
-    hexagram: str         # 只写卦名（兑/离/艮等），不出现“爻”等术语
-    meaning: str          # 卦义对应的人话解释
-    advice: str           # 小建议
-
-class SimpleSections(BaseModel):
-    姿态: SimpleSection
-    神情: SimpleSection
-    面相: SimpleSection    # ← 五官 改名为 面相
-
-class IChingSimple(BaseModel):
-    summary: str          # 一句话总结（人类可读）
-    archetype: str        # 2~5字意象标签（如：外冷内热）
-    confidence: float     # 0~1
-    sections: SimpleSections
-    domains: Dict[str, str]  # {"金钱与事业": "...", "配偶与感情": "..."}
-    meta: Optional[Dict] = None  # 可选：内部统计（主卦/编号/变爻）
-
-    @field_validator("confidence")
-    @classmethod
-    def _clip_conf(cls, v: float) -> float:
-        return max(0.0, min(1.0, float(v)))
-
-# ---------------- 工具函数 ----------------
-SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]")
-
-def sanitize_filename(name: str) -> str:
-    name = (name or "").strip().replace(" ", "_")
-    name = SAFE_NAME_RE.sub("", name)
-    if not name or name.startswith("."):
-        name = f"img_{uuid.uuid4().hex}.jpg"
-    return name
-
-def ensure_unique_path(dir_: str, name: str) -> str:
-    root, ext = os.path.splitext(name)
-    cand = name
-    i = 1
-    while os.path.exists(os.path.join(dir_, cand)):
-        cand = f"{root}_{i}{ext}"
-        i += 1
-    return os.path.join(dir_, cand)
-
-def get_absolute_base_url(request: Request) -> str:
-    if BASE_URL:
-        return BASE_URL.rstrip("/")
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
-    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
-    return f"{proto}://{host}"
-
-def build_image_url(request: Request, filename: str) -> str:
-    return f"{get_absolute_base_url(request)}/images/{filename}"
-
-def check_api_key(x_api_key: Optional[str]) -> None:
-    if API_KEY and x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-def file_to_data_url(path: str, max_side: int = 1600, quality: int = 85) -> str:
-    """
-    读取本地图片，轻压缩 -> data URL（避免外链超时）
-    """
-    with Image.open(path) as im:
-        im = im.convert("RGB")
-        w, h = im.size
-        scale = min(1.0, max_side / float(max(w, h)))
-        if scale < 1.0:
-            im = im.resize((int(w * scale), int(h * scale)))
-        buf = BytesIO()
-        im.save(buf, format="JPEG", quality=quality, optimize=True)
-        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{b64}"
-
-def call_openai_with_retry(payload: dict, retries: int = 1, backoff: float = 0.8):
-    """
-    payload 示例：
-      {
-        "messages": [...],
-        "model": "gpt-4o",
-        "temperature": 0.1,
-        "tools": [...],
-        "tool_choice": {"type":"function","function":{"name":"submit_analysis_v3"}}
-      }
-    """
-    client = OpenAI()  # 读取 OPENAI_API_KEY
-    last_err = None
-    for attempt in range(retries + 1):
-        try:
-            return client.chat.completions.create(**payload)
-        except Exception as e:
-            last_err = e
-            if attempt < retries:
-                time.sleep(backoff * (attempt + 1))
-            else:
-                raise last_err
-
-# ---------------- 根/健康/版本 ----------------
-@app.get("/", operation_id="root_get")
-def root_get():
-    return {"message": "🎉 Selfy AI 易经分析接口在线。POST /upload 上传图片。"}
-
-@app.head("/", include_in_schema=False)
-def root_head():
-    return {"message": "ok"}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/version")
 def version():
-    return {"version": app.version}
+    return {"version": VERSION, "debug": DEBUG, "schema": SCHEMA_ID}
 
-# ---------------- 上传并分析（v3） ----------------
-@app.post("/upload")
-@app.post("/upload/")
-async def analyze_with_vision(
-    request: Request,
-    file: UploadFile = File(...),
-    x_api_key: Optional[str] = Header(default=None),
-):
-    # 鉴权（可选）
-    check_api_key(x_api_key)
 
-    # 校验
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=415, detail="Only image/* is supported.")
-    size_header = request.headers.get("content-length")
-    if size_header and int(size_header) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(status_code=413, detail=f"File too large (> {MAX_UPLOAD_MB}MB).")
+def _to_data_url(content: bytes, content_type: str) -> str:
+    b64 = base64.b64encode(content).decode("utf-8")
+    return f"data:{content_type};base64,{b64}"
 
-    # 保存文件
-    try:
-        clean_name = sanitize_filename(file.filename)
-        save_path = ensure_unique_path(UPLOAD_DIR, clean_name)
-        with open(save_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-    except Exception as e:
-        logger.exception("Saving file failed")
-        raise HTTPException(status_code=500, detail=f"Save failed: {e}")
 
-    filename = os.path.basename(save_path)
-    public_url = build_image_url(request, filename)  # 给前端看
-    data_url = file_to_data_url(save_path)           # 给 OpenAI 用
-
-    # ---- System / User 提示（对外友好，不出现“变爻/爻辞”等术语）----
-    system_prompt = (
-        "你是《易经》面部观照的专业分析师。仅基于人物本身（忽略服饰/背景/灯光），"
-        "按【姿态、神情、面相】三项输出：每项包含 features（客观特征）、卦名 hexagram（只写卦名）、"
-        "meaning（简明含义）、advice（小建议）。"
-        "生成一句 summary 与 2~5 字 archetype（意象标签）。"
-        "面向普通用户，不使用“主卦”“爻”等术语；如需统计，把主卦编号与变爻写入 meta（可选），界面不展示。"
-        "严格通过函数（tools）提交结果，禁止输出其它文本。避免健康/种族/性别偏见。"
-    )
-    user_prompt = "请按函数 schema 返回严谨的 JSON 参数；只写卦名，不出现爻位术语。"
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": user_prompt},
-                {"type": "image_url", "image_url": {"url": data_url}},
-            ],
-        },
-    ]
-
-    # ---- 函数（tools）Schema：submit_analysis_v3 ----
-    tools = [
+def _build_tools_schema() -> list[dict]:
+    """
+    工具约束为 C 端扁平结构；允许将更丰富的内容放在 meta 中。
+    """
+    return [
         {
             "type": "function",
             "function": {
                 "name": "submit_analysis_v3",
-                "description": "提交面向普通用户可读的易经分析（姿态/神情/面相 + 总结与分域）",
+                "description": "Return end-user facing JSON for Selfy AI YiJing analysis.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "summary": { "type": "string" },
-                        "archetype": { "type": "string", "description": "2~5字意象标签，如：外冷内热" },
-                        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
-
+                        "summary": {"type": "string"},
+                        "archetype": {"type": "string"},
+                        "confidence": {"type": "number"},
                         "sections": {
                             "type": "object",
                             "properties": {
-                                "姿态": {
-                                    "type": "object",
-                                    "properties": {
-                                        "features": { "type": "array", "items": { "type": "string" } },
-                                        "hexagram": { "type": "string", "description": "只写卦名，如 兑/离/艮..." },
-                                        "meaning": { "type": "string" },
-                                        "advice": { "type": "string" }
-                                    },
-                                    "required": ["features", "hexagram", "meaning", "advice"]
-                                },
-                                "神情": {
-                                    "type": "object",
-                                    "properties": {
-                                        "features": { "type": "array", "items": { "type": "string" } },
-                                        "hexagram": { "type": "string" },
-                                        "meaning": { "type": "string" },
-                                        "advice": { "type": "string" }
-                                    },
-                                    "required": ["features", "hexagram", "meaning", "advice"]
-                                },
-                                "面相": {
-                                    "type": "object",
-                                    "properties": {
-                                        "features": { "type": "array", "items": { "type": "string" } },
-                                        "hexagram": { "type": "string" },
-                                        "meaning": { "type": "string" },
-                                        "advice": { "type": "string" }
-                                    },
-                                    "required": ["features", "hexagram", "meaning", "advice"]
-                                }
+                                "姿态": {"type": "string"},
+                                "神情": {"type": "string"},
+                                "面相": {"type": "string"},
                             },
                             "required": ["姿态", "神情", "面相"],
                             "additionalProperties": False
                         },
-
                         "domains": {
-                            "type": "object",
-                            "properties": {
-                                "金钱与事业": { "type": "string" },
-                                "配偶与感情": { "type": "string" }
-                            },
-                            "required": ["金钱与事业", "配偶与感情"]
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Only from ['金钱与事业','配偶与感情']"
                         },
-
                         "meta": {
                             "type": "object",
-                            "properties": {
-                                "hexagram": { "type": "string" },
-                                "hexagram_number": { "type": "integer", "minimum": 1, "maximum": 64 },
-                                "changing_lines": {
-                                    "type": "array",
-                                    "items": { "type": "integer", "minimum": 1, "maximum": 6 }
-                                }
-                            },
-                            "additionalProperties": False
+                            "description": "Optional metadata for debugging or triple-analysis rich content",
+                            "additionalProperties": True
                         }
                     },
                     "required": ["summary", "archetype", "confidence", "sections", "domains"],
@@ -290,46 +98,237 @@ async def analyze_with_vision(
         }
     ]
 
-    # ---- 调用并解析 ----
-    try:
-        resp = call_openai_with_retry(
-            {
-                "messages": messages,
-                "model": "gpt-4o",
-                "temperature": 0.1,
-                "tools": tools,
-                "tool_choice": {"type": "function", "function": {"name": "submit_analysis_v3"}},
-            },
-            retries=1,
-        )
 
-        choice = resp.choices[0]
-        tool_calls = getattr(choice.message, "tool_calls", None)
-        if not tool_calls or tool_calls[0].function.name != "submit_analysis_v3":
-            logger.error("No tool call returned. raw=%r", getattr(choice.message, "content", "")[:200])
-            raise HTTPException(status_code=502, detail="Vision error: tool call missing")
+def _prompt_for_image() -> list[dict]:
+    """
+    三象拆分法：姿态 / 神情 / 环境 → 卦象组合 → 总结
+    保持对外 JSON 扁平，细节放 meta.triple_analysis。
+    """
+    sys = (
+        "你是 Selfy AI 的易经分析助理。"
+        "请使用“三象拆分法”先进行结构化分析："
+        "1. 姿态 → 给出对应卦象、特征（列表）、解读、性格倾向；"
+        "2. 神情 → 给出对应卦象、特征（列表）、解读、性格倾向；"
+        "3. 环境 → 给出对应卦象、特征（列表）、解读、性格倾向；"
+        "4. 卦象组合：融合三象，给出整体意境的1-2句描述；"
+        "5. 总结性格印象：用一句意境化中文总结。"
+        "然后将上述内容映射到工具函数 submit_analysis_v3 的 JSON："
+        "- summary：写“总结性格印象”；"
+        "- archetype：意境化标签，如“外冷内热”等；"
+        "- sections：将“姿态/神情/面相(若无面相则用神情替代)”各压缩为一句中文；"
+        "- domains：仅从 ['金钱与事业','配偶与感情'] 中选择相关项；"
+        "- meta：把完整“三象拆分法”的结构体放在 meta.triple_analysis；如有更细特征也放在 meta.sections_detail。"
+        "严格通过工具函数 submit_analysis_v3 返回，不要产生其它输出。"
+    )
+    user = (
+        "请分析这张图片，结合易经/面相/五官关系，但忽略背景与服饰。"
+        "语言：中文。保证工具 JSON 严格符合 schema，并包含 meta.triple_analysis。"
+    )
+    return [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": user},
+    ]
 
-        args_str = tool_calls[0].function.arguments or "{}"
+
+def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
+    if client is None:
+        raise RuntimeError("OpenAI client is not initialized. Check OPENAI_API_KEY.")
+
+    messages = _prompt_for_image()
+    messages[-1]["content"] = [
+        {"type": "text", "text": messages[-1]["content"]},
+        {"type": "image_url", "image_url": {"url": data_url}},
+    ]
+
+    logger.debug("[OAI] Sending messages with image (Data URL)")
+
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.2,
+        tools=_build_tools_schema(),
+        tool_choice="auto",
+        messages=messages,
+    )
+
+    if DEBUG:
         try:
-            data = orjson.loads(args_str)
-        except Exception as e:
-            logger.error("Tool JSON parse failed: %s ; head=%r", e, args_str[:200])
-            raise HTTPException(status_code=502, detail="Vision error: invalid tool JSON")
+            logger.debug("[OAI] raw response: %s", resp)
+        except Exception:
+            pass
 
-        result = IChingSimple.model_validate(data)
+    choice = resp.choices[0]
+    tool_calls = getattr(choice.message, "tool_calls", None)
+    if not tool_calls:
+        raise RuntimeError("Model did not return tool_calls. Inspect raw response in DEBUG logs.")
 
-    except HTTPException:
+    tool = tool_calls[0]
+    if tool.function.name != "submit_analysis_v3":
+        raise RuntimeError(f"Unexpected tool called: {tool.function.name}")
+
+    try:
+        args = json.loads(tool.function.arguments)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Tool arguments JSON decode failed: {e}")
+
+    return {
+        "tool_args": args,
+        "oai_raw": resp if DEBUG else None
+    ]
+
+
+def _join_cn(items: List[str]) -> str:
+    items = [s for s in items if isinstance(s, str) and s.strip()]
+    if not items:
+        return ""
+    return "、".join(items)
+
+
+def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    兼容“富结构”并压平：
+    - sections.* 保证为字符串；如果收到对象{features,hexagram,meaning,advice}，拼句并下沉到 meta.sections_detail
+    - domains 支持对象/数组两种；对象时将键数组化，并把详文存到 meta.domains_detail
+    - 若不存在 meta.triple_analysis 但能从 sections_detail 推断，自动补一份
+    """
+    allowed_domains = {"金钱与事业", "配偶与感情"}
+    out = dict(data)  # 浅拷贝
+
+    # 确保 meta
+    meta = out.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    out["meta"] = meta
+
+    # sections 处理
+    sections = out.get("sections") or {}
+    if isinstance(sections, dict):
+        detail_bucket = meta.setdefault("sections_detail", {})
+        for k in ["姿态", "神情", "面相"]:
+            v = sections.get(k)
+            if isinstance(v, dict):
+                detail_bucket[k] = v
+                features = v.get("features") if isinstance(v.get("features"), list) else []
+                features_txt = _join_cn(features)
+                parts = []
+                if features_txt:
+                    parts.append(f"特征：{features_txt}")
+                if v.get("hexagram"):
+                    parts.append(f"卦象：{v.get('hexagram')}")
+                if v.get("meaning"):
+                    parts.append(f"含义：{v.get('meaning')}")
+                if v.get("advice"):
+                    parts.append(f"建议：{v.get('advice')}")
+                sections[k] = "；".join([p for p in parts if p])
+            elif isinstance(v, str):
+                pass
+            else:
+                sections[k] = sections.get(k) or ""
+        out["sections"] = sections
+
+    # domains 处理
+    domains = out.get("domains")
+    if isinstance(domains, dict):
+        domain_keys = [k for k in domains.keys() if k in allowed_domains]
+        out["domains"] = domain_keys
+        meta["domains_detail"] = {k: domains[k] for k in domain_keys}
+    elif isinstance(domains, list):
+        out["domains"] = [d for d in domains if d in allowed_domains]
+    else:
+        out["domains"] = []
+
+    # 必填兜底
+    out["summary"] = out.get("summary") or ""
+    out["archetype"] = out.get("archetype") or ""
+    try:
+        out["confidence"] = float(out.get("confidence", 0.0))
+    except Exception:
+        out["confidence"] = 0.0
+
+    # 自动补 meta.triple_analysis（如果缺失）
+    triple = meta.get("triple_analysis")
+    if not isinstance(triple, dict):
+        # 可以根据 sections_detail 粗构
+        sd = meta.get("sections_detail") or {}
+        if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情"]):
+            def _mk(seg):
+                segd = sd.get(seg) or {}
+                return {
+                    "卦象": segd.get("hexagram", ""),
+                    "特征": segd.get("features", []),
+                    "解读": segd.get("meaning", ""),
+                    "性格倾向": segd.get("advice", ""),
+                }
+            triple = {
+                "姿态": _mk("姿态"),
+                "神情": _mk("神情"),
+                "环境": _mk("环境"),  # 可能为空
+                "组合意境": "",       # 无从推断则置空
+                "总结": out.get("summary", ""),
+            }
+            meta["triple_analysis"] = triple
+
+    return out
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
+    try:
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded.")
+
+        content_type = file.content_type or ""
+        if not content_type.startswith("image/"):
+            raise HTTPException(status_code=415, detail=f"Unsupported content type: {content_type}")
+
+        raw = await file.read()
+        if not raw or len(raw) == 0:
+            raise HTTPException(status_code=400, detail="Empty file.")
+
+        if len(raw) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large (>15MB).")
+
+        data_url = _to_data_url(raw, content_type)
+        logger.info("[UPLOAD] file=%s size=%d type=%s", file.filename, len(raw), content_type)
+
+        result = _call_gpt_tool_with_image(data_url)
+        tool_args = result["tool_args"]
+
+        # 统一规范化输出（兼容富结构 & 注入 triple_analysis）
+        final_out = _coerce_output(tool_args)
+
+        # DEBUG 附加
+        if DEBUG:
+            meta = final_out.setdefault("meta", {})
+            meta.setdefault("debug", {})
+            meta["debug"]["debug_mode"] = True
+            meta["debug"]["file_info"] = {
+                "filename": file.filename,
+                "content_type": content_type,
+                "size": len(raw),
+            }
+            if result.get("oai_raw") is not None:
+                try:
+                    meta["debug"]["oai_choice_finish_reason"] = result["oai_raw"].choices[0].finish_reason
+                    meta["debug"]["oai_has_tool_calls"] = bool(result["oai_raw"].choices[0].message.tool_calls)
+                except Exception:
+                    meta["debug"]["oai_choice_finish_reason"] = "n/a"
+                    meta["debug"]["oai_has_tool_calls"] = "n/a"
+
+        return JSONResponse(content=final_out, status_code=200)
+
+    except HTTPException as he:
+        if DEBUG:
+            return JSONResponse(
+                status_code=he.status_code,
+                content={
+                    "error": he.detail,
+                    "debug": {"trace": traceback.format_exc()}
+                }
+            )
         raise
     except Exception as e:
-        logger.exception("OpenAI vision failed")
+        logger.exception("[ERROR] /upload failed: %s", e)
+        body = {"error": "Internal Server Error"}
         if DEBUG:
-            # 调试时把详细错误透给前端，便于排错
-            raise HTTPException(status_code=502, detail=f"Vision error (debug): {repr(e)}")
-        raise HTTPException(status_code=502, detail="Vision error")
-
-    return JSONResponse({"image_url": public_url, "analysis": result.model_dump()})
-
-# ---------------- 本地调试 ----------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("fastapi_app:app", host="0.0.0.0", port=8000, reload=True)
+            body["debug"] = {"message": str(e), "trace": traceback.format_exc()}
+        return JSONResponse(status_code=500, content=body)
