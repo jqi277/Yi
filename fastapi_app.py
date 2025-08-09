@@ -29,6 +29,7 @@ app.add_middleware(
 )
 
 load_dotenv()
+DEBUG = os.getenv("DEBUG", "0") == "1"
 API_KEY = os.getenv("API_KEY", "").strip()
 BASE_URL = os.getenv("BASE_URL", "").strip()
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "10"))
@@ -321,7 +322,10 @@ async def analyze_with_vision(
         raise
     except Exception as e:
         logger.exception("OpenAI vision failed")
-        raise HTTPException(status_code=502, detail=f"Vision error: {e}")
+        if DEBUG:
+            # 调试时把详细错误透给前端，便于排错
+            raise HTTPException(status_code=502, detail=f"Vision error (debug): {repr(e)}")
+        raise HTTPException(status_code=502, detail="Vision error")
 
     return JSONResponse({"image_url": public_url, "analysis": result.model_dump()})
 
