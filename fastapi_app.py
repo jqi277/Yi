@@ -258,7 +258,7 @@ async def analyze_with_vision(
                                 }
                             },
                             "required": ["姿态", "神情", "面相"],
-                            "additionalProperties": false
+                            "additionalProperties": False
                         },
 
                         "domains": {
@@ -280,11 +280,11 @@ async def analyze_with_vision(
                                     "items": { "type": "integer", "minimum": 1, "maximum": 6 }
                                 }
                             },
-                            "additionalProperties": false
+                            "additionalProperties": False
                         }
                     },
                     "required": ["summary", "archetype", "confidence", "sections", "domains"],
-                    "additionalProperties": false
+                    "additionalProperties": False
                 }
             }
         }
