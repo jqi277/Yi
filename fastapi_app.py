@@ -153,38 +153,81 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
 
     logger.debug("[OAI] Sending messages with image (Data URL)")
 
+    # 第一次：强制指定函数（不要用 "auto"）
     resp = client.chat.completions.create(
         model="gpt-4o",
         temperature=0.2,
         tools=_build_tools_schema(),
-        tool_choice="auto",
+        tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
         messages=messages,
     )
 
     if DEBUG:
         try:
-            logger.debug("[OAI] raw response: %s", resp)
+            logger.debug("[OAI] raw response (pass1): %s", resp)
         except Exception:
             pass
 
     choice = resp.choices[0]
     tool_calls = getattr(choice.message, "tool_calls", None)
-    if not tool_calls:
-        raise RuntimeError("Model did not return tool_calls. Inspect raw response in DEBUG logs.")
 
-    tool = tool_calls[0]
-    if tool.function.name != "submit_analysis_v3":
-        raise RuntimeError(f"Unexpected tool called: {tool.function.name}")
+    # ✅ 正常走工具
+    if tool_calls:
+        tool = tool_calls[0]
+        if tool.function.name != "submit_analysis_v3":
+            raise RuntimeError(f"Unexpected tool called: {tool.function.name}")
+        try:
+            args = json.loads(tool.function.arguments)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Tool arguments JSON decode failed: {e}")
+        return {"tool_args": args, "oai_raw": resp if DEBUG else None}
 
-    try:
-        args = json.loads(tool.function.arguments)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Tool arguments JSON decode failed: {e}")
+    # ❗兜底：有些时候模型会直接把 JSON 写进 content，不走工具；我们尝试解析
+    content = getattr(choice.message, "content", None)
+    if isinstance(content, str) and content.strip().startswith("{"):
+        try:
+            args = json.loads(content)
+            return {"tool_args": args, "oai_raw": resp if DEBUG else None}
+        except Exception:
+            pass
 
-    return {
-        "tool_args": args,
-        "oai_raw": resp if DEBUG else None,
-    }
+    # ❗兜底重试：再发一次，附加一句强提示，并启用 JSON 响应格式
+    harder_messages = messages + [
+        {"role": "system", "content": "你必须通过函数 submit_analysis_v3 返回结果，严格符合 schema。不要直接输出文本。"}
+    ]
+    resp2 = client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.1,
+        tools=_build_tools_schema(),
+        tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
+        response_format={"type": "json_object"},
+        messages=harder_messages,
+    )
+
+    if DEBUG:
+        try:
+            logger.debug("[OAI] raw response (pass2): %s", resp2)
+        except Exception:
+            pass
+
+    choice2 = resp2.choices[0]
+    tool_calls2 = getattr(choice2.message, "tool_calls", None)
+    if tool_calls2:
+        tool2 = tool_calls2[0]
+        try:
+            args2 = json.loads(tool2.function.arguments)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Tool arguments JSON decode failed (pass2): {e}")
+        return {"tool_args": args2, "oai_raw": resp2 if DEBUG else None}
+
+    # 仍失败：尽可能把内容带回 debug
+    msg = "Model did not return tool_calls after forced attempt."
+    if DEBUG:
+        raw1 = getattr(choice, "message", None)
+        raw2 = getattr(choice2, "message", None)
+        logger.error("[OAI] %s\npass1=%s\npass2=%s", msg, raw1, raw2)
+    raise RuntimeError(msg)
+
 
 
 def _join_cn(items: List[str]) -> str:
