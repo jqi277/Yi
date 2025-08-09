@@ -109,27 +109,129 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
     return {"tool_args": args, "oai_raw": resp if DEBUG else None}
 
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
-    allowed = {"金钱与事业","配偶与感情"}
-    out = dict(data); meta = out.get("meta") or {}; meta = meta if isinstance(meta, dict) else {}; out["meta"]=meta
-    ta = meta.get("triple_analysis") if isinstance(meta.get("triple_analysis"), dict) else {}
-    sections = out.get("sections") or {}; sections = sections if isinstance(sections, dict) else {}
+    """
+    目标：
+    - 任何字段即便是 str（甚至是 JSON 字符串）也不崩；
+    - sections.* 始终输出一句话；
+    - domains 支持对象/数组；对象转数组，长文进 meta.domains_detail；
+    - 生成 meta.combo_title 供前端使用。
+    """
+    allowed = {"金钱与事业", "配偶与感情"}
+
+    out = dict(data) if isinstance(data, dict) else {}
+    meta = out.get("meta")
+    if isinstance(meta, str):
+        # 有时 meta 被当成 JSON 字符串
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    out["meta"] = meta
+
+    # triple_analysis 可能是 dict / JSON 字符串 / 其它
+    ta_raw = meta.get("triple_analysis")
+    if isinstance(ta_raw, str):
+        try:
+            ta = json.loads(ta_raw)
+        except Exception:
+            ta = {}
+    elif isinstance(ta_raw, dict):
+        ta = ta_raw
+    else:
+        ta = {}
+    if not isinstance(ta, dict):
+        ta = {}
+
+    # sections 可能是 dict / 字符串
+    sections_raw = out.get("sections")
+    if isinstance(sections_raw, str):
+        # 有些模型会把 sections 整体拼成一段字符串，尽量不崩，留空等下重建
+        sections = {}
+        # 可选：尝试解析成 JSON
+        try:
+            tmp = json.loads(sections_raw)
+            if isinstance(tmp, dict):
+                sections = tmp
+        except Exception:
+            pass
+    elif isinstance(sections_raw, dict):
+        sections = sections_raw
+    else:
+        sections = {}
+
+    def _safe_seg(d):
+        """单个三象对象安全取字段；d 可能是 dict/str/其它"""
+        if isinstance(d, str):
+            try:
+                d = json.loads(d)
+            except Exception:
+                d = {}
+        if not isinstance(d, dict):
+            d = {}
+        return {
+            "说明": d.get("说明") or "",
+            "卦象": d.get("卦象") or "",
+            "解读": d.get("解读") or "",
+            "性格倾向": d.get("性格倾向") or ""
+        }
+
     def _mk_line(name_cn: str, fallback_key: str) -> str:
-        o = ta.get(name_cn) or {}; desc=o.get("说明") or ""; hexg=o.get("卦象") or ""; mean=o.get("解读") or ""; tend=o.get("性格倾向") or ""
-        parts=[p for p in [desc, f"卦象：{hexg}" if hexg else "", mean, tend] if p]; line="；".join(parts); return line or (sections.get(fallback_key) or "")
-    sections["姿态"]=_mk_line("姿态","姿态"); sections["神情"]=_mk_line("神情","神情"); sections["面相"]=_mk_line("面容","面相"); out["sections"]=sections
+        o = _safe_seg(ta.get(name_cn))
+        desc, hexg, mean, tend = o["说明"], o["卦象"], o["解读"], o["性格倾向"]
+        parts = [p for p in [desc, f"卦象：{hexg}" if hexg else "", mean, tend] if p]
+        line = "；".join(parts).strip("；")
+        # 如果 ta 里没有有效信息，回退到 sections.*（可能本身就是一句话）
+        if not line:
+            v = sections.get(fallback_key)
+            line = v if isinstance(v, str) else ""
+        return line
+
+    # 统一生成三象一句话（“面容”→对外键仍叫“面相”）
+    out["sections"] = {
+        "姿态": _mk_line("姿态", "姿态"),
+        "神情": _mk_line("神情", "神情"),
+        "面相": _mk_line("面容", "面相"),
+    }
+
+    # domains：对象→数组，并把长文放 meta.domains_detail
     domains = out.get("domains")
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            domains = []
     if isinstance(domains, dict):
-        keys=[k for k in domains.keys() if k in allowed]; out["domains"]=keys; meta["domains_detail"]={k:domains[k] for k in keys}
-    elif isinstance(domains, list): out["domains"]=[d for d in domains if d in allowed]
-    else: out["domains"]=[]
-    out["summary"]=out.get("summary") or ""; out["archetype"]=out.get("archetype") or ""
-    try: out["confidence"]=float(out.get("confidence",0.0))
-    except Exception: out["confidence"]=0.0
-    if isinstance(ta, dict) and ta:
-        hexes=[ta.get("姿态",{}).get("卦象",""), ta.get("神情",{}).get("卦象",""), ta.get("面容",{}).get("卦象","")]
-        combo=" + ".join([h for h in hexes if h]); 
-        if combo: meta["combo_title"]=combo
+        keys = [k for k in domains.keys() if k in allowed]
+        out["domains"] = keys
+        meta["domains_detail"] = {k: domains[k] for k in keys}
+    elif isinstance(domains, list):
+        out["domains"] = [d for d in domains if isinstance(d, str) and d in allowed]
+    else:
+        out["domains"] = []
+
+    # 兜底必填
+    out["summary"] = out.get("summary") or ""
+    out["archetype"] = out.get("archetype") or ""
+    try:
+        out["confidence"] = float(out.get("confidence", 0.0))
+    except Exception:
+        out["confidence"] = 0.0
+
+    # 组合标题
+    ta_safe = {
+        "姿态": _safe_seg(ta.get("姿态")),
+        "神情": _safe_seg(ta.get("神情")),
+        "面容": _safe_seg(ta.get("面容")),
+    }
+    hexes = [ta_safe["姿态"]["卦象"], ta_safe["神情"]["卦象"], ta_safe["面容"]["卦象"]]
+    combo_title = " + ".join([h for h in hexes if h])
+    if combo_title:
+        meta["combo_title"] = combo_title
+
     return out
+
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
