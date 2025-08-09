@@ -116,20 +116,24 @@ def _prompt_for_image() -> List[Dict[str, Any]]:
     保持对外 JSON 扁平，细节放 meta.triple_analysis。
     """
     sys = (
-        "你是 Selfy AI 的易经分析助理。"
-        "请使用“三象拆分法”先进行结构化分析："
-        "1. 姿态 → 给出对应卦象、特征（列表）、解读、性格倾向；"
-        "2. 神情 → 给出对应卦象、特征（列表）、解读、性格倾向；"
-        "3. 环境 → 给出对应卦象、特征（列表）、解读、性格倾向；"
-        "4. 卦象组合：融合三象，给出整体意境的1-2句描述；"
-        "5. 总结性格印象：用一句意境化中文总结。"
-        "然后将上述内容映射到工具函数 submit_analysis_v3 的 JSON："
-        "- summary：写“总结性格印象”；"
-        "- archetype：意境化标签，如“外冷内热”等；"
-        "- sections：将“姿态/神情/面相(若无面相则用神情替代)”各压缩为一句中文；"
-        "- domains：仅从 ['金钱与事业','配偶与感情'] 中选择相关项；"
-        "- meta：把完整“三象拆分法”的结构体放在 meta.triple_analysis；如有更细特征也放在 meta.sections_detail。"
-        "严格通过工具函数 submit_analysis_v3 返回，不要产生其它输出。"
+    "你是 Selfy AI 的易经观相助手。必须先用“三象四段式”分析："
+    "【姿态/神情/面容】三部分，每部分包含："
+    "1) 说明：1句，描绘该面向的具体外观/动作/气质；"
+    "2) 卦象：仅写一个卦名（如 艮、离、兑……）；"
+    "3) 解读：1–2句，解释该卦在此面向的含义；"
+    "4) 性格倾向：1–2句，把“特征”合并成倾向，总结性格走向。"
+    "然后给出："
+    "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文60–120字；"
+    "6) 总结性格印象：20–40字的意境化总结。"
+    "将结果通过 submit_analysis_v3 工具返回，字段要求："
+    "- summary：第6条“总结性格印象”；"
+    "- archetype：意境化标签（如“外冷内热”等）；"
+    "- sections：把三象各压成一句中文（姿态/神情/面相）；"
+    "- domains：仅从 ['金钱与事业','配偶与感情'] 选择；"
+    "- meta.triple_analysis：需包含键：'姿态','神情','面容','组合意境','总结'；"
+    "  其中每个三象对象含：'说明','卦象','解读','性格倾向'；"
+    "- meta.domains_detail：对'金钱与事业'与'配偶与感情'分别给出60–90字建议；"
+    "语言：中文。禁止输出除工具调用以外的任何自由文本。"
     )
     user = (
         "请分析这张图片，结合易经/面相/五官关系，但忽略背景与服饰。"
@@ -156,9 +160,10 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
     # 第一次：强制指定函数（不要用 "auto"）
     resp = client.chat.completions.create(
         model="gpt-4o",
-        temperature=0.2,
+        temperature=0.3,   # 稳定些
         tools=_build_tools_schema(),
         tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
+        response_format={"type": "json_object"},
         messages=messages,
     )
 
@@ -240,21 +245,43 @@ def _join_cn(items: List[str]) -> str:
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     兼容“富结构”并压平：
-    - sections.* 保证为字符串；如果收到对象{features,hexagram,meaning,advice}，拼句并下沉到 meta.sections_detail
-    - domains 支持对象/数组两种；对象时将键数组化，并把详文存到 meta.domains_detail
-    - 若不存在 meta.triple_analysis 但能从 sections_detail 推断，自动补一份
+    - 优先从 meta.triple_analysis 生成三象一句话（说明→卦象→解读→性格倾向）
+    - sections.* 保障为字符串；如收到对象{features,hexagram,meaning,advice}再压平
+    - domains 支持对象/数组；对象转数组，详文进 meta.domains_detail
+    - 若无 meta.triple_analysis 但有 sections_detail，自动补【姿态/神情/面容】
     """
     allowed_domains = {"金钱与事业", "配偶与感情"}
-    out = dict(data)  # 浅拷贝
 
-    # 确保 meta
+    # 先拿出 out/meta/sections，避免 NameError
+    out = dict(data)
     meta = out.get("meta") or {}
     if not isinstance(meta, dict):
         meta = {}
     out["meta"] = meta
 
-    # sections 处理
     sections = out.get("sections") or {}
+    if not isinstance(sections, dict):
+        sections = {}
+
+    # 1) 优先：用 triple_analysis 拼三象一句话
+    ta = (meta.get("triple_analysis") or {}) if isinstance(meta.get("triple_analysis"), dict) else {}
+    def _mk_line(name_cn: str, fallback_key: str) -> str:
+        o = ta.get(name_cn) or {}
+        desc = o.get("说明") or ""
+        hexg = o.get("卦象") or ""
+        mean = o.get("解读") or ""
+        tend = o.get("性格倾向") or ""
+        parts = [p for p in [desc, f"卦象：{hexg}" if hexg else "", mean, tend] if p]
+        line = "；".join(parts)
+        return line or (sections.get(fallback_key) or "")
+
+    # 注意：扁平字段名仍叫“面相”，而三象对象里我们用“面容”
+    sections["姿态"] = _mk_line("姿态", "姿态")
+    sections["神情"] = _mk_line("神情", "神情")
+    sections["面相"] = _mk_line("面容", "面相")
+    out["sections"] = sections
+
+    # 2) 兼容：如果 sections.* 仍是对象，就压平为一句话并把详情存到 meta.sections_detail
     if isinstance(sections, dict):
         detail_bucket = meta.setdefault("sections_detail", {})
         for k in ["姿态", "神情", "面相"]:
@@ -262,24 +289,16 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(v, dict):
                 detail_bucket[k] = v
                 features = v.get("features") if isinstance(v.get("features"), list) else []
-                features_txt = _join_cn(features)
+                features_txt = "、".join([s for s in features if isinstance(s, str) and s.strip()])
                 parts = []
-                if features_txt:
-                    parts.append(f"特征：{features_txt}")
-                if v.get("hexagram"):
-                    parts.append(f"卦象：{v.get('hexagram')}")
-                if v.get("meaning"):
-                    parts.append(f"含义：{v.get('meaning')}")
-                if v.get("advice"):
-                    parts.append(f"建议：{v.get('advice')}")
-                sections[k] = "；".join([p for p in parts if p])
-            elif isinstance(v, str):
-                pass
-            else:
-                sections[k] = sections.get(k) or ""
+                if features_txt: parts.append(f"特征：{features_txt}")
+                if v.get("hexagram"): parts.append(f"卦象：{v.get('hexagram')}")
+                if v.get("meaning"): parts.append(f"含义：{v.get('meaning')}")
+                if v.get("advice"): parts.append(f"建议：{v.get('advice')}")
+                sections[k] = "；".join(parts)
         out["sections"] = sections
 
-    # domains 处理
+    # 3) 处理 domains：对象→数组，并把详文沉到 meta.domains_detail
     domains = out.get("domains")
     if isinstance(domains, dict):
         domain_keys = [k for k in domains.keys() if k in allowed_domains]
@@ -290,7 +309,7 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     else:
         out["domains"] = []
 
-    # 必填兜底
+    # 4) 必填兜底
     out["summary"] = out.get("summary") or ""
     out["archetype"] = out.get("archetype") or ""
     try:
@@ -298,29 +317,29 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         out["confidence"] = 0.0
 
-    # 自动补 meta.triple_analysis（如果缺失）
-    triple = meta.get("triple_analysis")
-    if not isinstance(triple, dict):
+    # 5) 自动补 meta.triple_analysis（若缺）——注意用“面容”不是“环境”
+    if not isinstance(meta.get("triple_analysis"), dict):
         sd = meta.get("sections_detail") or {}
-        if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情"]):
-            def _mk(seg):
-                segd = sd.get(seg) or {}
+        if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情", "面相"]):
+            def _mk(seg_src, sd_key):
+                segd = sd.get(sd_key) or {}
                 return {
+                    "说明": "",  # 无法从旧结构推断，留空
                     "卦象": segd.get("hexagram", ""),
                     "特征": segd.get("features", []),
                     "解读": segd.get("meaning", ""),
                     "性格倾向": segd.get("advice", ""),
                 }
-            triple = {
-                "姿态": _mk("姿态"),
-                "神情": _mk("神情"),
-                "环境": _mk("环境"),
+            meta["triple_analysis"] = {
+                "姿态": _mk("姿态", "姿态"),
+                "神情": _mk("神情", "神情"),
+                "面容": _mk("面容", "面相"),   # ← 这里用“面容”，源数据取“面相”
                 "组合意境": "",
                 "总结": out.get("summary", ""),
             }
-            meta["triple_analysis"] = triple
 
     return out
+
 
 
 @app.post("/upload")
