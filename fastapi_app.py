@@ -1,12 +1,12 @@
-# fastapi_app.py  (v3.5-len.1)
-import os, base64, json, logging, traceback, re
+# fastapi_app.py  (v3.5-len)
+import os, base64, json, logging, traceback
 from typing import Dict, Any, List
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
-VERSION = "3.5-len.1"
+VERSION = "3.5-len"
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG", "0")).strip() in ("1","true","True","YES","yes")
 
@@ -108,160 +108,169 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
     except json.JSONDecodeError as e: raise RuntimeError(f"Tool arguments JSON decode failed: {e}")
     return {"tool_args": args, "oai_raw": resp if DEBUG else None}
 
-# --------------------------- robust normalizer ---------------------------
-
-_DEF_SUMMARY = "外在沉稳，内里有光，选择性社交。"
-
-def _parse_seg_from_line(line: str) -> Dict[str, str]:
-    """
-    反向从“一句合成文本”里解析三象四段：
-    形如：说明；卦象：X；解读：...；性格倾向：...
-    """
-    if not isinstance(line, str): line = ""
-    line = line.strip("；").strip()
-    seg = {"说明":"", "卦象":"", "解读":"", "性格倾向":""}
-    if not line: return seg
-    # 卦象
-    m = re.search(r"卦象[:：]\s*([^\s；。,\u3002]+)", line)
-    if m: seg["卦象"] = m.group(1).strip()
-    # 解读
-    m = re.search(r"解读[:：]\s*(.+?)(?:；|$)", line)
-    if m: seg["解读"] = m.group(1).strip()
-    # 性格倾向
-    m = re.search(r"(性格倾向|倾向)[:：]\s*(.+?)(?:；|$)", line)
-    if m: seg["性格倾向"] = m.group(2).strip()
-    # 说明 = 去掉已知字段之前的部分
-    parts = re.split(r"[；;]", line)
-    if parts: seg["说明"] = parts[0].strip()
-    return seg
-
-def _parse_triple_from_free_text(txt: str) -> Dict[str, Any]:
-    """
-    模型偶尔把 meta.triple_analysis 写成一整段字符串。
-    这里尝试从中抽取三象 + 组合意境 + 总结。
-    """
-    triple = {"姿态":{}, "神情":{}, "面容":{}, "组合意境":"", "总结":""}
-    if not isinstance(txt, str): return triple
-    # 尝试切块：按“姿态/神情/面容/组合意境/总结”关键词
-    # 也兼容不带小标题、只是顺序拼接的情况（取三次“卦象：”分段）
-    # 1) 直接命名块
-    for key in ["姿态","神情","面容"]:
-        m = re.search(rf"{key}.*?(卦象[:：].+?)(?=(姿态|神情|面容|组合意境|总结|$))", txt, flags=re.S)
-        if m:
-            triple[key] = _parse_seg_from_line(m.group(1))
-    # 2) 组合意境 / 总结
-    m = re.search(r"(组合意境)[:：]\s*(.+?)(?=(姿态|神情|面容|总结|$))", txt, flags=re.S)
-    if m: triple["组合意境"] = m.group(2).strip()
-    m = re.search(r"(总结)[:：]\s*(.+)$", txt, flags=re.S)
-    if m: triple["总结"] = m.group(2).strip()
-    return triple
-
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     目标：
     - 任何字段即便是 str（甚至是 JSON 字符串）也不崩；
     - sections.* 始终输出一句话；
     - domains 支持对象/数组；对象转数组，长文进 meta.domains_detail；
-    - 永远构造出 meta.triple_analysis 的标准结构；补 meta.combo_title。
+    - 生成 meta.combo_title 供前端使用。
     """
     allowed = {"金钱与事业", "配偶与感情"}
 
     out = dict(data) if isinstance(data, dict) else {}
     meta = out.get("meta")
     if isinstance(meta, str):
-        try: meta = json.loads(meta)
-        except Exception: meta = {}
-    if not isinstance(meta, dict): meta = {}
+        # 有时 meta 被当成 JSON 字符串
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
     out["meta"] = meta
 
-    # ---------- 读原 triple（可能是 dict 或 字符串） ----------
-    raw_ta = meta.get("triple_analysis")
-    triple: Dict[str, Any]
-    if isinstance(raw_ta, dict):
-        triple = raw_ta
-    elif isinstance(raw_ta, str):
-        # 先尝试当 JSON
-        t = None
+    # triple_analysis 可能是 dict / JSON 字符串 / 其它
+    ta_raw = meta.get("triple_analysis")
+    if isinstance(ta_raw, str):
         try:
-            t = json.loads(raw_ta)
-            if not isinstance(t, dict): t = None
+            ta = json.loads(ta_raw)
         except Exception:
-            t = None
-        triple = t if t is not None else _parse_triple_from_free_text(raw_ta)
+            ta = {}
+    elif isinstance(ta_raw, dict):
+        ta = ta_raw
     else:
-        triple = {}
+        ta = {}
+    if not isinstance(ta, dict):
+        ta = {}
 
-    # ---------- sections 读取 ----------
+    # sections 可能是 dict / 字符串
     sections_raw = out.get("sections")
     if isinstance(sections_raw, str):
+        sections = {}
         try:
-            tmp = json.loads(sections_raw); sections = tmp if isinstance(tmp, dict) else {}
+            tmp = json.loads(sections_raw)
+            if isinstance(tmp, dict):
+                sections = tmp
         except Exception:
-            sections = {}
+            pass
     elif isinstance(sections_raw, dict):
         sections = sections_raw
     else:
         sections = {}
 
-    # 如果 triple 中三象为空，尝试从 sections 反向解析
-    def _ensure_seg(o): return {"说明":o.get("说明",""),"卦象":o.get("卦象",""),"解读":o.get("解读",""),"性格倾向":o.get("性格倾向","")}
-    def _from_sections(name_cn, fallback_key):
-        line = sections.get(fallback_key) if isinstance(sections.get(fallback_key), str) else ""
-        return _ensure_seg(_parse_seg_from_line(line))
+    def _safe_seg(d):
+        """单个三象对象安全取字段；d 可能是 dict/str/其它"""
+        if isinstance(d, str):
+            try:
+                d = json.loads(d)
+            except Exception:
+                d = {}
+        if not isinstance(d, dict):
+            d = {}
+        return {
+            "说明": d.get("说明") or "",
+            "卦象": d.get("卦象") or "",
+            "解读": d.get("解读") or "",
+            "性格倾向": d.get("性格倾向") or ""
+        }
 
-    t姿 = triple.get("姿态") if isinstance(triple.get("姿态"), dict) else {}
-    t神 = triple.get("神情") if isinstance(triple.get("神情"), dict) else {}
-    t面 = (triple.get("面容") if isinstance(triple.get("面容"), dict) else (triple.get("面相") if isinstance(triple.get("面相"), dict) else {}))
-
-    if not any(t姿.values()): t姿 = _from_sections("姿态", "姿态")
-    if not any(t神.values()): t神 = _from_sections("神情", "神情")
-    if not any(t面.values()): t面 = _from_sections("面容", "面相")
-
-    triple = {
-        "姿态": _ensure_seg(t姿),
-        "神情": _ensure_seg(t神),
-        "面容": _ensure_seg(t面),
-    }
-
-    # 组合意境 / 总结
-    combo = meta.get("combo_title") or meta.get("组合意境") or ""
-    if not combo:
-        hx = [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]]
-        combo = " + ".join([h for h in hx if h])
-    summary = out.get("summary") or ""
-    if not summary:
-        # 尝试从原始字符串里面抓“总结：”
-        raw_ta_str = meta.get("triple_analysis")
-        if isinstance(raw_ta_str, str):
-            m = re.search(r"(总结)[:：]\s*(.+)$", raw_ta_str, flags=re.S)
-            if m: summary = m.group(2).strip()
-    if not summary: summary = _DEF_SUMMARY
-
-    meta["triple_analysis"] = {
-        "姿态": triple["姿态"],
-        "神情": triple["神情"],
-        "面容": triple["面容"],
-        "组合意境": combo if combo else "整体气质克制而有火光，外在稳、内在明，处事理性中带热度。",
-        "总结": summary
-    }
-
-    # ---------- 输出三象一句话到 sections ----------
-    def _mk_line(seg):
-        desc, hexg, mean, tend = seg["说明"], seg["卦象"], seg["解读"], seg["性格倾向"]
+    def _mk_line(name_cn: str, fallback_key: str) -> str:
+        o = _safe_seg(ta.get(name_cn))
+        desc, hexg, mean, tend = o["说明"], o["卦象"], o["解读"], o["性格倾向"]
         parts = [p for p in [desc, f"卦象：{hexg}" if hexg else "", mean, tend] if p]
-        return "；".join(parts).strip("；")
+        line = "；".join(parts).strip("；")
+        if not line:
+            v = sections.get(fallback_key)
+            line = v if isinstance(v, str) else ""
+        return line
 
     out["sections"] = {
-        "姿态": _mk_line(meta["triple_analysis"]["姿态"]),
-        "神情": _mk_line(meta["triple_analysis"]["神情"]),
-        "面相": _mk_line(meta["triple_analysis"]["面容"]),
+        "姿态": _mk_line("姿态", "姿态"),
+        "神情": _mk_line("神情", "神情"),
+        "面相": _mk_line("面容", "面相"),
     }
 
-    # ---------- domains ----------
+    # domains：对象→数组，并把长文放 meta.domains_detail
     domains = out.get("domains")
     if isinstance(domains, str):
-        try: domains = json.loads(domains)
-        except Exception: domains = []
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            domains = []
+    if isinstance(domains, dict):
+        keys = [k for k in domains.keys() if k in allowed]
+        out["domains"] = keys
+        meta["domains_detail"] = {k: domains[k] for k in keys}
+    elif isinstance(domains, list):
+        out["domains"] = [d for d in domains if isinstance(d, str) and d in allowed]
+    else:
+        out["domains"] = []
+
+    # —— 必填兜底 —— 
+    out["summary"] = out.get("summary") or ""
+    out["archetype"] = out.get("archetype") or ""
+    try:
+        out["confidence"] = float(out.get("confidence", 0.0))
+    except Exception:
+        out["confidence"] = 0.0
+
+    # === 兼容前端键名：面容 -> 面相（同时保留面容） ===
+    triple = meta.get("triple_analysis")
+    if not isinstance(triple, dict):
+        triple = {}
+    if isinstance(triple, str):
+        try:
+            triple = json.loads(triple)
+        except Exception:
+            triple = {}
+    if not isinstance(triple, dict):
+        triple = {}
+    def _ensure_seg(o: Any) -> Dict[str, Any]:
+        if isinstance(o, str):
+            try:
+                o = json.loads(o)
+            except Exception:
+                o = {}
+        if not isinstance(o, dict):
+            o = {}
+        return {
+            "说明": o.get("说明") or "",
+            "卦象": o.get("卦象") or "",
+            "解读": o.get("解读") or "",
+            "性格倾向": o.get("性格倾向") or "",
+        }
+
+    triple["姿态"] = _ensure_seg(triple.get("姿态"))
+    triple["神情"] = _ensure_seg(triple.get("神情"))
+    face_seg = triple.get("面容") or triple.get("面相") or {}
+    face_seg = _ensure_seg(face_seg)
+    triple["面容"] = face_seg
+    triple["面相"] = dict(face_seg)
+
+    combo = triple.get("组合意境") or ""
+    if not combo:
+        hx = [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]]
+        hx = " + ".join([h for h in hx if h])
+        brief = "整体气质克制而有火光，外在稳、内在明，处事理性中带热度。"
+        triple["组合意境"] = f"{hx}" if hx else brief
+    if not triple.get("总结"):
+        triple["总结"] = out.get("summary") or "外在沉稳，内里有光，选择性社交。"
+
+    meta["triple_analysis"] = triple
+
+    # === 生成组合标题，供前端头图使用 ===
+    hexes = [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]]
+    meta["combo_title"] = " + ".join([h for h in hexes if h])
+
+    # === domains / domains_detail 兜底 ===
+    allowed = {"金钱与事业", "配偶与感情"}
+    domains = out.get("domains")
+    if isinstance(domains, str):
+        try:
+            domains = json.loads(domains)
+        except Exception:
+            domains = []
     if isinstance(domains, dict):
         keys = [k for k in domains.keys() if k in allowed]
         out["domains"] = keys
@@ -273,32 +282,26 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
 
     dd = meta.get("domains_detail")
     if isinstance(dd, str):
-        try: dd = json.loads(dd)
-        except Exception: dd = {}
-    if not isinstance(dd, dict): dd = {}
-    # 兜底建议
+        try:
+            dd = json.loads(dd)
+        except Exception:
+            dd = {}
+    if not isinstance(dd, dict):
+        dd = {}
     def _ensure_advice(key, fallback):
         if key not in dd or not isinstance(dd.get(key), str) or not dd.get(key).strip():
             dd[key] = fallback
-            if key not in out["domains"]: out["domains"].append(key)
+            if key not in out["domains"]:
+                out["domains"].append(key)
 
     arche = out.get("archetype") or "外冷内热"
     _ensure_advice("金钱与事业", f"{arche}：擅长独立推进与质量把控，短期重稳健现金流；建议设立节点复盘与对外协作位，避免闭环过严错失窗口。")
     _ensure_advice("配偶与感情", f"{arche}：表冷里热，重边界与真诚；建议放缓观察周期，适度表达需求，匹配价值观与生活节奏。")
     meta["domains_detail"] = dd
 
-    # ---------- 其它必填 ----------
-    out["summary"] = summary
-    out["archetype"] = out.get("archetype") or "自信圆融"
-    try: out["confidence"] = float(out.get("confidence", 0.0))
-    except Exception: out["confidence"] = 0.0
-
-    # combo_title 给前端用
-    meta["combo_title"] = " + ".join([x for x in [triple["姿态"]["卦象"], triple["神情"]["卦象"], triple["面容"]["卦象"]] if x])
-
     return out
 
-# --------------------------- /upload ---------------------------
+
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
