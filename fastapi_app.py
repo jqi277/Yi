@@ -1,4 +1,4 @@
-# fastapi_app.py  (v3.5 → v3.5-ui-r2)
+# fastapi_app.py  (v3.5+ui)
 import os
 import base64
 import json
@@ -7,7 +7,7 @@ import traceback
 from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
@@ -39,24 +39,42 @@ except Exception as e:
     client = None
 
 
+# ===== Bagua mapping =====
+BAGUA_SYMBOLS = {
+    "艮": "山",
+    "离": "火",
+    "兑": "泽",
+    "乾": "天",
+    "坤": "地",
+    "震": "雷",
+    "巽": "风",
+    "坎": "水",
+}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/", include_in_schema=False)
 def root():
-    return HTMLResponse("""
+    return HTMLResponse(
+        """
         <h3>Selfy AI - YiJing Analysis API</h3>
         <ul>
           <li><a href="/docs">/docs (Swagger)</a></li>
           <li><a href="/health">/health</a></li>
           <li><a href="/version">/version</a></li>
         </ul>
-    """)
+    """
+    )
+
 
 @app.head("/", include_in_schema=False)
 def root_head():
     return Response(status_code=200)
+
 
 @app.get("/version")
 def version():
@@ -102,7 +120,13 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
                             "additionalProperties": True,
                         },
                     },
-                    "required": ["summary", "archetype", "confidence", "sections", "domains"],
+                    "required": [
+                        "summary",
+                        "archetype",
+                        "confidence",
+                        "sections",
+                        "domains",
+                    ],
                     "additionalProperties": False,
                 },
             },
@@ -111,33 +135,30 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
 
 
 def _prompt_for_image() -> List[Dict[str, Any]]:
-    # 保持你的旧逻辑，只强调“卦象组合 bullets/summary、卦名含象字、两段式总结”
     sys = (
-      "你是 Selfy AI 的易经观相助手。必须先用“三象四段式”分析："
-      "【姿态/神情/面容】三部分，每部分包含："
-      "1) 说明：1句，描绘该面向的具体外观/动作/气质；"
-      "2) 卦象：仅写一个卦名（如 艮/离/兑/乾/坤/震/巽/坎），必要时可写为“艮（山）”等；"
-      "3) 解读：1–2句，解释该卦在此面向的含义；"
-      "4) 性格倾向：1–2句，总结性格走向。"
-      "然后给出："
-      "5) 卦象组合：生成 meta.combo：gua_list（三卦名，不带括号）/ bullets（2–4条短句，如“外冷内热”“独立审美”“稳重理智”“交际选择性”）/ summary（40–80字）；"
-      "   并生成 meta.combo_title='姿态卦 + 神情卦 + 面相卦'（不带括号）。"
-      "6) 总结性格印象：两段式——"
-      "   第一行：'这个人给人的感觉是：' 换行后一段带引号的总印象（30–50字）；"
-      "   第二段：'在易经意境中，像是 “X” —— Y。'（20–40字）。"
-      "将结果通过 submit_analysis_v3 工具返回，字段要求："
-      "- summary：按第6条两段式；"
-      "- archetype：意境化标签（如“外冷内热”等）；"
-      "- sections：把三象各压成一句中文（姿态/神情/面相）；"
-      "- domains：仅从 ['金钱与事业','配偶与感情'] 选择；"
-      "- meta.triple_analysis：需包含键：'姿态','神情','面容','组合意境','总结'；"
-      "  其中每个三象对象含：'说明','卦象','解读','性格倾向'；"
-      "- meta.domains_detail：对'金钱与事业'与'配偶与感情'分别给出60–90字建议；"
-      "语言：中文。禁止输出除工具调用以外的任何自由文本。"
-      "八卦参考：艮=山，离=火，兑=泽，乾=天，坤=地，震=雷，巽=风，坎=水。"
+        "你是 Selfy AI 的易经观相助手。必须先用“三象四段式”分析："
+        "【姿态/神情/面容】三部分，每部分包含："
+        "1) 说明：1句，描绘该面向的具体外观/动作/气质；"
+        "2) 卦象：仅写一个卦名（如 艮、离、兑、乾、坤、震、巽、坎）；"
+        "3) 解读：1–2句，解释该卦在此面向的含义；"
+        "4) 性格倾向：1–2句，把“特征”合并成倾向，总结性格走向。"
+        "然后给出："
+        "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文90–150字；"
+        "6) 总结性格印象：20–40字的意境化总结。"
+        "将结果通过 submit_analysis_v3 工具返回，字段要求："
+        "- summary：第6条“总结性格印象”；"
+        "- archetype：意境化标签（如“外冷内热”等）；"
+        "- sections：把三象各压成一句中文（姿态/神情/面相）；"
+        "- domains：仅从 ['金钱与事业','配偶与感情'] 选择；"
+        "- meta.triple_analysis：需包含键：'姿态','神情','面容','组合意境','总结'；"
+        "  其中每个三象对象含：'说明','卦象','解读','性格倾向'；"
+        "- meta.domains_detail：对'金钱与事业'与'配偶与感情'分别给出60–90字建议；"
+        "禁止使用“环境”作为第三象。语言：中文。禁止输出除工具调用以外的任何自由文本。"
+        "八卦参考：艮=止=稳重/边界；离=火=明亮/表达；兑=泽=交流/愉悦；乾=天=领导/自信；坤=地=包容/承载；震=雷=行动；巽=风=协商；坎=水=谨慎/深度。"
     )
     user = (
-        "请分析这张图片，返回严格符合 schema 的工具 JSON（含三象四段式、组合 bullets+summary、两段式总结、domains 建议）。"
+        "请分析这张图片，结合易经/面相/五官关系。"
+        "返回严格符合 schema 的工具 JSON，并包含 meta.triple_analysis（姿态/神情/面容四段式、组合意境、总结）与 meta.domains_detail。"
     )
     return [
         {"role": "system", "content": sys},
@@ -193,9 +214,11 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # 兜底重试
     harder_messages = messages + [
-        {"role": "system", "content": "你必须通过函数 submit_analysis_v3 返回结果，严格符合 schema。不要直接输出文本。"}
+        {
+            "role": "system",
+            "content": "你必须通过函数 submit_analysis_v3 返回结果，严格符合 schema。不要直接输出文本。",
+        }
     ]
     resp2 = client.chat.completions.create(
         model="gpt-4o",
@@ -233,31 +256,19 @@ def _join_cn(items: List[str]) -> str:
 
 
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    UI 适配（不破坏旧结构）：
-    - meta.top_tag：只显示 archetype + confidence（给页面最上面那排）
-    - meta.combo {gua_list, bullets, summary} + meta.combo_title
-    - meta.sections_titles：'姿态 → 艮卦（山）' 这种标题
-    - meta.summary_rich {impression, imagery}；summary 写成两段合并文本
-    - 保留旧 sections 一句话；domains/domains_detail 兼容
-    """
     allowed_domains = {"金钱与事业", "配偶与感情"}
-    GUA_TO_XIANG = {"乾":"天","坤":"地","震":"雷","巽":"风","坎":"水","离":"火","艮":"山","兑":"泽"}
 
-    out = dict(data) if isinstance(data, dict) else {}
+    out = dict(data)
     meta = out.get("meta") or {}
     if not isinstance(meta, dict):
         meta = {}
     out["meta"] = meta
 
-    # ---------- sections 一句话（优先 triple_analysis） ----------
     sections = out.get("sections") or {}
     if not isinstance(sections, dict):
         sections = {}
 
-    ta = meta.get("triple_analysis")
-    if not isinstance(ta, dict):
-        ta = {}
+    ta = meta.get("triple_analysis") if isinstance(meta.get("triple_analysis"), dict) else {}
 
     def _mk_line(name_cn: str, fallback_key: str) -> str:
         o = ta.get(name_cn) or {}
@@ -274,111 +285,134 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     sections["面相"] = _mk_line("面容", "面相")
     out["sections"] = sections
 
-    # ---------- 顶部 tag ----------
-    out["archetype"] = out.get("archetype") or "外冷内热"
-    try:
-        out["confidence"] = float(out.get("confidence", out.get("可信度", 0.88)))
-    except Exception:
-        out["confidence"] = 0.88
-    meta["top_tag"] = {"personality_tag": out["archetype"], "confidence": out["confidence"]}
+    detail_bucket = meta.setdefault("sections_detail", {})
+    for k in ["姿态", "神情", "面相"]:
+        v = sections.get(k)
+        if isinstance(v, dict):
+            detail_bucket[k] = v
+            features = v.get("features") if isinstance(v.get("features"), list) else []
+            features_txt = _join_cn(features)
+            parts = []
+            if features_txt:
+                parts.append(f"特征：{features_txt}")
+            if v.get("hexagram"):
+                parts.append(f"卦象：{v.get('hexagram')}")
+            if v.get("meaning"):
+                parts.append(f"含义：{v.get('meaning')}")
+            if v.get("advice"):
+                parts.append(f"建议：{v.get('advice')}")
+            sections[k] = "；".join([p for p in parts if p])
+    out["sections"] = sections
 
-    # ---------- 分象标题：'姿态 → 艮卦（山）' ----------
-    def _core_gua(g: str) -> str:
-        if not isinstance(g, str): return ""
-        return g.replace("（","(").split("(")[0].strip()
-
-    def _title_of(seg_key: str, ta_key: str) -> str:
-        g = _core_gua((ta.get(ta_key) or {}).get("卦象",""))
-        if g and g in GUA_TO_XIANG:
-            return f"{seg_key} → {g}卦（{GUA_TO_XIANG[g]}）"
-        return seg_key
-
-    meta["sections_titles"] = {
-        "姿态": _title_of("姿态", "姿态"),
-        "神情": _title_of("神情", "神情"),
-        "面相": _title_of("面相", "面容"),
-    }
-
-    # ---------- 卦象组合（bullets + summary） ----------
-    combo = meta.get("combo")
-    if not isinstance(combo, dict):
-        combo = {}
-
-    def _safe_list(x):
-        return x if isinstance(x, list) else []
-
-    gua_list = _safe_list(combo.get("gua_list"))
-    if not gua_list:
-        gl = [
-            _core_gua((ta.get("姿态") or {}).get("卦象","")),
-            _core_gua((ta.get("神情") or {}).get("卦象","")),
-            _core_gua((ta.get("面容") or {}).get("卦象","")),
-        ]
-        gua_list = [g for g in gl if g]
-
-    bullets = _safe_list(combo.get("bullets"))
-    if not bullets:
-        bullets = ["外冷内热","独立审美","稳重理智","交际选择性"]
-
-    combo_summary = (combo.get("summary") or "").strip() or "这种组合显示：外表克制沉稳，内心保有热度与理想；对人际更重深度与真诚连接。"
-
-    meta["combo"] = {"gua_list": gua_list, "bullets": bullets, "summary": combo_summary}
-    meta["combo_title"] = " + ".join([g for g in gua_list if g])
-
-    # ---------- 两段式总结 ----------
-    impression = "这个人给人的感觉是：\n“外在沉稳冷艳，内心热情坚定，重视自我独立与美感，对人际关系有选择性。”"
-    # 用卦映射成意境，如“山中有火，火映泽面”
-    xiangs = [GUA_TO_XIANG.get(x, "") for x in gua_list]
-    xiangs = [x for x in xiangs if x]
-    if len(xiangs) >= 2:
-        imagery = f"在易经意境中，像是 “{xiangs[0]}中有{xiangs[1]}，{xiangs[1]}映{xiangs[0]}面” —— 内藏光芒，择人而耀。"
-    else:
-        imagery = "在易经意境中，像是 “山中有火，火映泽面” —— 内藏光芒，择人而耀。"
-    meta["summary_rich"] = {"impression": impression, "imagery": imagery}
-    out["summary"] = impression + "\n" + imagery
-
-    # ---------- domains / domains_detail ----------
-    allowed = {"金钱与事业", "配偶与感情"}
     domains = out.get("domains")
     if isinstance(domains, dict):
-        domain_keys = [k for k in domains.keys() if k in allowed]
+        domain_keys = [k for k in domains.keys() if k in allowed_domains]
         out["domains"] = domain_keys
         meta["domains_detail"] = {k: domains[k] for k in domain_keys}
     elif isinstance(domains, list):
-        out["domains"] = [d for d in domains if d in allowed]
+        out["domains"] = [d for d in domains if d in allowed_domains]
     else:
         out["domains"] = []
 
-    dd = meta.get("domains_detail")
-    if isinstance(dd, str):
-        try:
-            dd = json.loads(dd)
-        except Exception:
-            dd = {}
-    if not isinstance(dd, dict):
-        dd = {}
+    out["summary"] = out.get("summary") or ""
+    out["archetype"] = out.get("archetype") or ""
+    try:
+        out["confidence"] = float(out.get("confidence", 0.0))
+    except Exception:
+        out["confidence"] = 0.0
 
-    def _ensure_heavy(key: str):
-        txt = (dd.get(key) or "").strip()
-        if len(txt) < 140:
-            if key == "金钱与事业":
-                dd[key] = (
-                    "稳重理智，适合承担重要任务。建议：①小步试错+两周复盘，固定记录与SOP迭代；"
-                    "②设置对外协作位（技术/渠道/财务其一），每周30分钟沟通同步。"
-                    "预警：若出现一次性押注或长期闭环不汇报，立即缩小试错规模并公开里程碑。"
-                )
-            else:
-                dd[key] = (
-                    "外冷内热，重边界与真诚。建议：①每周一次30分钟节律沟通，只谈事实—感受—需求；"
-                    "②重要信息4小时内先回应，晚些再细聊。"
-                    "预警：若连续两次回避表达或过度理性化，对方会感到疏离，需要以共享计划或情感回应补偿。"
-                )
-        if key not in out["domains"]:
-            out["domains"].append(key)
+    if not isinstance(meta.get("triple_analysis"), dict):
+        sd = meta.get("sections_detail") or {}
+        if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情", "面相"]):
+            def _mk(sd_key):
+                segd = sd.get(sd_key) or {}
+                return {
+                    "说明": "",
+                    "卦象": segd.get("hexagram", ""),
+                    "特征": segd.get("features", []),
+                    "解读": segd.get("meaning", ""),
+                    "性格倾向": segd.get("advice", ""),
+                }
 
-    _ensure_heavy("金钱与事业")
-    _ensure_heavy("配偶与感情")
-    meta["domains_detail"] = dd
+            meta["triple_analysis"] = {
+                "姿态": _mk("姿态"),
+                "神情": _mk("神情"),
+                "面容": _mk("面相"),
+                "组合意境": "",
+                "总结": out.get("summary", ""),
+            }
+
+    ta2 = meta.get("triple_analysis") or {}
+    hexes = [
+        ta2.get("姿态", {}).get("卦象", ""),
+        ta2.get("神情", {}).get("卦象", ""),
+        ta2.get("面容", {}).get("卦象", ""),
+    ]
+    combo_title = " + ".join([h for h in hexes if h])
+    if combo_title:
+        meta["combo_title"] = combo_title
+
+    # === Build UI helpers for frontend ===
+
+    # 1) 顶部 tag：性格标签 + 可信度
+    meta["headline"] = {
+        "tag": out.get("archetype", ""),
+        "confidence": out.get("confidence", 0.0),
+    }
+
+    # 2) 分象标题：显示“姿态 → 艮卦（山）”等
+    def _title_with_hex(section_key: str, ta_key: str):
+        hexname = (ta2.get(ta_key, {}) or {}).get("卦象", "")
+        symbol = BAGUA_SYMBOLS.get(hexname, "")
+        if hexname and symbol:
+            return f"{section_key} → {hexname}卦（{symbol}）"
+        elif hexname:
+            return f"{section_key} → {hexname}卦"
+        else:
+            return section_key
+
+    meta["sections_titles"] = {
+        "姿态": _title_with_hex("姿态", "姿态"),
+        "神情": _title_with_hex("神情", "神情"),
+        "面相": _title_with_hex("面相", "面容"),
+    }
+
+    # 3) 卦象组合：标题 + 要点（供第一排 box 列出）
+    combo_points = []
+    for k in ("姿态", "神情", "面容"):
+        tend = (ta2.get(k, {}) or {}).get("性格倾向", "")
+        if isinstance(tend, str) and tend.strip():
+            combo_points.append(tend.strip())
+
+    combo_yijing = (ta2.get("组合意境", "") or "").strip()
+    if combo_yijing:
+        combo_points.append(combo_yijing)
+
+    combo_title_txt = meta.get("combo_title", "").strip()
+    combo_full_title = f"🔮 卦象组合：{combo_title_txt}" if combo_title_txt else "🔮 卦象组合"
+
+    meta["combo_detail"] = {
+        "title": combo_full_title,
+        "bullets": combo_points[:6],
+    }
+
+    # 4) 总结性格：加一行意境句
+    h1 = (ta2.get("姿态", {}) or {}).get("卦象", "")
+    h2 = (ta2.get("神情", {}) or {}).get("卦象", "")
+    h3 = (ta2.get("面容", {}) or {}).get("卦象", "")
+    s1, s2, s3 = BAGUA_SYMBOLS.get(h1, ""), BAGUA_SYMBOLS.get(h2, ""), BAGUA_SYMBOLS.get(h3, "")
+    imagery = ""
+    if s1 and s2 and s3:
+        imagery = f"“{s1}中有{s2}，{s2}映{s3}面”"
+    elif s1 and s2:
+        imagery = f"“{s1}映{s2}光”"
+    elif s2 and s3:
+        imagery = f"“{s2}照{s3}容”"
+
+    meta["summary_rich"] = {
+        "lead": out.get("summary", ""),
+        "imagery": f"在易经意境中，像是 {imagery} —— 内藏光芒，择人而耀。" if imagery else "",
+    }
 
     out["meta"] = meta
     return out
@@ -392,7 +426,9 @@ async def upload(file: UploadFile = File(...)):
 
         content_type = file.content_type or ""
         if not content_type.startswith("image/"):
-            raise HTTPException(status_code=415, detail=f"Unsupported content type: {content_type}")
+            raise HTTPException(
+                status_code=415, detail=f"Unsupported content type: {content_type}"
+            )
 
         raw = await file.read()
         if not raw or len(raw) == 0:
@@ -420,8 +456,12 @@ async def upload(file: UploadFile = File(...)):
             }
             if result.get("oai_raw") is not None:
                 try:
-                    meta["debug"]["oai_choice_finish_reason"] = result["oai_raw"].choices[0].finish_reason
-                    meta["debug"]["oai_has_tool_calls"] = bool(result["oai_raw"].choices[0].message.tool_calls)
+                    meta["debug"]["oai_choice_finish_reason"] = result["oai_raw"].choices[
+                        0
+                    ].finish_reason
+                    meta["debug"]["oai_has_tool_calls"] = bool(
+                        result["oai_raw"].choices[0].message.tool_calls
+                    )
                 except Exception:
                     meta["debug"]["oai_choice_finish_reason"] = "n/a"
                     meta["debug"]["oai_has_tool_calls"] = "n/a"
@@ -432,10 +472,7 @@ async def upload(file: UploadFile = File(...)):
         if DEBUG:
             return JSONResponse(
                 status_code=he.status_code,
-                content={
-                    "error": he.detail,
-                    "debug": {"trace": traceback.format_exc()}
-                }
+                content={"error": he.detail, "debug": {"trace": traceback.format_exc()}},
             )
         raise
     except Exception as e:
