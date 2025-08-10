@@ -180,3 +180,5 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
 
     content = getattr(choice.message, "content", None)
     if isinstance(content, str) and content.strip().startswith("{"):
+        content = json.loads(content)
+
