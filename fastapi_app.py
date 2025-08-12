@@ -264,7 +264,43 @@ def _compose_auto_archetype(hexes: List[str]) -> str:
     return f"{tags[0]}取向"
 
 
+def _inflate_dotted_keys(obj):
+    """把形如 {'meta.triple_analysis': {...}} 的扁平键，转成 {'meta': {'triple_analysis': {...}}}。
+    递归处理多层 'a.b.c' 的情况，并保留原有同名嵌套字段（嵌套优先）。"""
+    if not isinstance(obj, dict):
+        return obj
+    out = {}
+    # 先拷贝原有（让已有嵌套优先）
+    for k, v in obj.items():
+        if "." not in k:
+            out[k] = _inflate_dotted_keys(v) if isinstance(v, dict) else v
+    # 再把点号键灌入
+    for k, v in obj.items():
+        if isinstance(k, str) and "." in k:
+            head, tail = k.split(".", 1)
+            # 若原来就有嵌套 meta，则在其基础上补全
+            base = out.setdefault(head, {})
+            if not isinstance(base, dict):
+                base = {}
+                out[head] = base
+            # 递归把 tail 链路灌入
+            cur = base
+            parts = tail.split(".")
+            for i, p in enumerate(parts):
+                if i == len(parts) - 1:
+                    cur[p] = v
+                else:
+                    cur = cur.setdefault(p, {})
+    # 对新增的子 dict 递归修复
+    for k in list(out.keys()):
+        if isinstance(out[k], dict):
+            out[k] = _inflate_dotted_keys(out[k])
+    return out
+
+
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
+    # 先把 meta.xxx 这类扁平键还原
+    data = _inflate_dotted_keys(data)
     allowed_domains = {"金钱与事业", "配偶与感情"}
 
     out = dict(data)
