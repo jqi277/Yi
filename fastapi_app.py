@@ -1,11 +1,9 @@
 # fastapi_app.py  (v3.7.5 - mobile route)
 import os, base64, json, logging, traceback
 from typing import Dict, Any, List
-
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
-
 from openai import OpenAI
 
 VERSION = "3.7.5"
@@ -51,12 +49,12 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
       }
     }]
 
-def _json_hint():
+def _json_hint() -> str:
     return ("只以 JSON object 返回（必须 JSON）。示例:{\"summary\":\"…\",\"archetype\":\"…\",\"confidence\":0.9,"
             "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
             "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
             "\"meta\":{\"triple_analysis\":{\"姿态\":{\"说明\":\"…\",\"卦象\":\"艮\",\"解读\":\"…（将性格倾向自然融入解读内）\"},\"神情\":{…},\"面容\":{…},\"组合意境\":\"…\",\"总结\":\"…\"},"
-            "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…\"},\"眼\":{…},\"鼻\":{…},\"嘴\":{…},\"颧/下巴\":{…}},"
+            "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…(不得复述特征原词)\"},\"眼\":{…},\"鼻\":{…},\"嘴\":{…},\"颧/下巴\":{…}},"
             "\"domains_detail\":{\"金钱与事业\":\"…\",\"配偶与感情\":\"…\"}}}")
 
 def _prompt_for_image():
@@ -65,11 +63,11 @@ def _prompt_for_image():
       "严格用“三象四段式”分析：【姿态/神情/面容】。每部分含：说明(1句)；卦象(艮/离/兑/乾/坤/震/巽/坎)；解读(1–3句)；性格倾向(1–2句)。"
       "重要：在输出时，把“性格倾向”自然地**融入解读**中（解读可相应加长），前端不单独展示“性格倾向”。"
       "面相必须拆解五官：给【眉/眼/鼻/嘴/颧或下巴】各1句具体特征，并为每项标注一个卦象并解读，写入 meta.face_parts。"
-      "【避免重复】“解读”不得简单复述“特征”的字词；如“神情”已描述某五官动态/风格，则“面相-五官”应换角度（形态/比例/纹理/功能感等）。"
-      "然后：5) 卦象组合：基于三卦“综合推理”写 4–6 条要点（不得逐字重复三象原句）；"
-      "6) 总结性格印象：20–40字，与三卦强相关，避免模板化；"
-      "7) 人格标签 archetype：中文标签；若内部推导是英文，也要给出中文意境词。"
-      "明令禁止：出现“五官端正/整体面容和谐/面容和谐”等套话。"
+      "【避免重复】如“神情”已描述某五官的动态/风格，则“面相-五官”应换角度（形态、比例、纹理、功能感等）描述，避免重复句；五官“解读”不得复述“特征”原词。"
+      "然后：5) 卦象组合：基于三卦“综合推理”写 4–6 条要点（不得逐字重复三象原文；要合成新的洞见，如外在呈现/内在驱动/沟通风格/决策风格/风险偏好等）；"
+      "6) 总结性格印象：20–40字，必须与三卦强相关，避免模板化；"
+      "7) 人格标签 archetype：如出现英文，请给出中文意象标签。"
+      "明令禁止：出现“五官端正/整体面容和谐/面容和谐”等套话；卦象组合中禁止仅复制三象‘性格倾向’原句。"
       "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。本消息含“JSON”以满足 API 要求。"
     )
     user = "请严格按要求分析图片，并只以 JSON 格式通过函数返回。"
@@ -127,11 +125,11 @@ def _synthesize_combo(ta: Dict[str, Any]):
     if "坤" in hexes: bullets.append("处事包容稳妥，善于托底与承载团队。")
     if "艮" in hexes: bullets.append("有边界感与秩序感，做事沉稳可靠。")
     if "巽" in hexes: bullets.append("倾向协商与整合资源，善做协调者。")
-    seen=set(); out=[]
+    seen = set(); out = []
     for b in bullets:
         if b not in seen:
             seen.add(b); out.append(b)
-        if len(out)>=5: break
+        if len(out) >= 5: break
     return hexes, out
 
 def _insight_for_domains(hexes: List[str]):
@@ -151,17 +149,6 @@ def _insight_for_domains(hexes: List[str]):
     if "震" in sets or "乾" in sets: segs.append("主动追求与决断")
     lines["感情"] = "；".join(segs) if segs else "重视稳定关系，沟通直接。"
     return lines
-
-def _archetype_cn_fallback(archetype: str, hexes: List[str]) -> str:
-    if archetype and any('\u4e00' <= ch <= '\u9fff' for ch in archetype):
-        return archetype
-    has = lambda h: h in hexes
-    if has("乾") and has("兑"): return "主导·亲和型"
-    if has("乾") and has("离"): return "主导·表达型"
-    if has("艮") and has("坤"): return "稳重·包容型"
-    if has("坎") and has("离"): return "谨慎·表达型"
-    if has("震") and has("兑"): return "行动·亲和型"
-    return archetype or "综合型"
 
 def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     data = _inflate_dotted_keys(data)
@@ -194,7 +181,7 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
 
     def _title_with_hex(section_key: str, ta_key: str) -> str:
         hexname = (ta.get(ta_key) or {}).get("卦象","")
-        symbol = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}.get(hexname,"")
+        symbol = BAGUA_SYMBOLS.get(hexname,"")
         return f"{section_key} → {hexname}卦（{symbol}）" if hexname and symbol else (f"{section_key} → {hexname}卦" if hexname else section_key)
     meta["sections_titles"] = {
         "姿态": _title_with_hex("姿态","姿态"),
@@ -202,7 +189,7 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "面相": _title_with_hex("面相","面容")
     }
 
-    out["archetype"] = _archetype_cn_fallback(out.get("archetype",""), hexes)
+    out["archetype"] = out.get("archetype","")
     try: out["confidence"] = float(out.get("confidence",0.0))
     except Exception: out["confidence"] = 0.0
     meta["headline"] = {"tag": out["archetype"], "confidence": out["confidence"]}
@@ -215,11 +202,10 @@ def health(): return {"status":"ok"}
 
 @app.get("/", include_in_schema=False)
 def root():
-    return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a>")
+    return HTMLResponse("<h3>Selfy AI</h3><div><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a></div>")
 
 @app.head("/", include_in_schema=False)
-def root_head():
-    return Response(status_code=200)
+def root_head(): return Response(status_code=200)
 
 @app.get("/version")
 def version(): return {"version":VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
@@ -280,11 +266,11 @@ async def upload(file: UploadFile = File(...)):
         if DEBUG: body["debug"]={"message":str(e),"trace":traceback.format_exc()}
         return JSONResponse(status_code=500, content=body)
 
-# Serve mobile page at /mobile
+# Serve mobile HTML from repo root
 @app.get("/mobile", include_in_schema=False)
 def mobile():
     try:
         html = open("index_mobile.html", "r", encoding="utf-8").read()
     except Exception:
-        html = "<h4>index_mobile.html not found</h4>"
+        html = "<h3>index_mobile.html 未找到</h3><p>请将 index_mobile.html 放在与 fastapi_app.py 同级目录，并重新部署。</p>"
     return HTMLResponse(html)
