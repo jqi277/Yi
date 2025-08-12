@@ -1,4 +1,4 @@
-# fastapi_app.py  (v3.5+ui)
+# fastapi_app.py  (v3.6-ui-plus)
 import os
 import base64
 import json
@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-VERSION = "3.5"
+VERSION = "3.6"
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG", "0")).strip() in ("1", "true", "True", "YES", "yes")
 
@@ -38,7 +38,6 @@ except Exception as e:
     logger.error("OpenAI client init failed: %s", e)
     client = None
 
-
 # ===== Bagua mapping =====
 BAGUA_SYMBOLS = {
     "艮": "山",
@@ -49,6 +48,17 @@ BAGUA_SYMBOLS = {
     "震": "雷",
     "巽": "风",
     "坎": "水",
+}
+
+BAGUA_TRAITS = {
+    "艮": "稳重/定界",
+    "离": "明晰/表达",
+    "兑": "亲和/交流",
+    "乾": "自信/主导",
+    "坤": "包容/承载",
+    "震": "果断/行动",
+    "巽": "圆融/协商",
+    "坎": "谨慎/深思",
 }
 
 
@@ -116,16 +126,12 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
                         },
                         "meta": {
                             "type": "object",
-                            "description": "Optional metadata for debugging or triple-analysis rich content",
+                            "description": "Optional metadata for debugging or rich content",
                             "additionalProperties": True,
                         },
                     },
                     "required": [
-                        "summary",
-                        "archetype",
-                        "confidence",
-                        "sections",
-                        "domains",
+                        "summary","archetype","confidence","sections","domains"
                     ],
                     "additionalProperties": False,
                 },
@@ -136,34 +142,31 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
 
 def _prompt_for_image() -> List[Dict[str, Any]]:
     sys = (
-        "你是 Selfy AI 的易经观相助手。必须先用“三象四段式”分析："
-        "【姿态/神情/面容】三部分，每部分包含："
+        "你是 Selfy AI 的易经观相助手。"
+        "必须先用“三象四段式”分析：【姿态/神情/面容】三部分，每部分包含："
         "1) 说明：1句，描绘该面向的具体外观/动作/气质；"
-        "2) 卦象：仅写一个卦名（如 艮、离、兑、乾、坤、震、巽、坎）；"
+        "2) 卦象：仅写一个卦名（艮/离/兑/乾/坤/震/巽/坎）；"
         "3) 解读：1–2句，解释该卦在此面向的含义；"
-        "4) 性格倾向：1–2句，把“特征”合并成倾向，总结性格走向。"
+        "4) 性格倾向：1–2句，总结该面的性格走向。"
+        "—— 面相部分需“拆解五官”，给出【眉/眼/鼻/嘴/颧或下巴】各1句具体特征，并基于易经作解读（映射到‘艮离兑乾坤震巽坎’之一），形成 meta.face_parts。"
         "然后给出："
-        "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文90–150字；"
-        "6) 总结性格印象：20–40字的意境化总结。"
+        "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文为4–6条要点（用短句），避免空泛；"
+        "6) 总结性格印象：20–40字，必须结合三卦特征形成“独特且相关”的总结；"
+        "7) 人格标签 archetype：必须根据三卦的主调自动生成（例如 乾+坤→“外刚内柔”，艮+离→“外稳内明” 等），禁止使用固定套话。"
         "将结果通过 submit_analysis_v3 工具返回，字段要求："
         "- summary：第6条“总结性格印象”；"
-        "- archetype：意境化标签（如“外冷内热”等）；"
-        "- sections：把三象各压成一句中文（姿态/神情/面相）；"
+        "- archetype：第7条生成的人格标签；"
+        "- sections：三象各压成一句中文（姿态/神情/面相）；"
         "- domains：仅从 ['金钱与事业','配偶与感情'] 选择；"
-        "- meta.triple_analysis：需包含键：'姿态','神情','面容','组合意境','总结'；"
-        "  其中每个三象对象含：'说明','卦象','解读','性格倾向'；"
-        "- meta.domains_detail：对'金钱与事业'与'配偶与感情'分别给出60–90字建议；"
-        "禁止使用“环境”作为第三象。语言：中文。禁止输出除工具调用以外的任何自由文本。"
-        "八卦参考：艮=止=稳重/边界；离=火=明亮/表达；兑=泽=交流/愉悦；乾=天=领导/自信；坤=地=包容/承载；震=雷=行动；巽=风=协商；坎=水=谨慎/深度。"
+        "- meta.triple_analysis：含键'姿态','神情','面容','组合意境','总结'；每个三象含'说明','卦象','解读','性格倾向'；"
+        "- meta.face_parts：键为'眉','眼','鼻','嘴','颧/下巴'，每个值含'特征','卦象','解读'；"
+        "- meta.domains_detail：对'金钱与事业'与'配偶与感情'分别给出尽量“单行可读”的建议（各40–70字）。"
+        "语言：中文。禁止输出除工具调用以外的任何自由文本。"
     )
     user = (
-        "请分析这张图片，结合易经/面相/五官关系。"
-        "返回严格符合 schema 的工具 JSON，并包含 meta.triple_analysis（姿态/神情/面容四段式、组合意境、总结）与 meta.domains_detail。"
+        "请严格按要求分析这张图片，避免模板化措辞。"
     )
-    return [
-        {"role": "system", "content": sys},
-        {"role": "user", "content": user},
-    ]
+    return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
 
 
 def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
@@ -180,7 +183,7 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
 
     resp = client.chat.completions.create(
         model="gpt-4o",
-        temperature=0.3,
+        temperature=0.4,  # 提高一点多样性
         tools=_build_tools_schema(),
         tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
         response_format={"type": "json_object"},
@@ -215,14 +218,11 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str, Any]:
             pass
 
     harder_messages = messages + [
-        {
-            "role": "system",
-            "content": "你必须通过函数 submit_analysis_v3 返回结果，严格符合 schema。不要直接输出文本。",
-        }
+        {"role": "system", "content": "你必须通过函数 submit_analysis_v3 返回结果，严格符合 schema。不要直接输出文本。"}
     ]
     resp2 = client.chat.completions.create(
         model="gpt-4o",
-        temperature=0.1,
+        temperature=0.35,
         tools=_build_tools_schema(),
         tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
         response_format={"type": "json_object"},
@@ -255,6 +255,17 @@ def _join_cn(items: List[str]) -> str:
     return "、".join(items)
 
 
+def _compose_auto_archetype(hexes: List[str]) -> str:
+    # 依据三卦主调组合一个标签
+    tags = [BAGUA_TRAITS.get(h, "") for h in hexes if h]
+    tags = [t.split("/")[0] for t in tags if t]
+    if not tags:
+        return ""
+    if len(tags) >= 2:
+        return f"外{tags[0]}内{tags[1]}"
+    return f"{tags[0]}取向"
+
+
 def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     allowed_domains = {"金钱与事业", "配偶与感情"}
 
@@ -285,24 +296,10 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     sections["面相"] = _mk_line("面容", "面相")
     out["sections"] = sections
 
-    detail_bucket = meta.setdefault("sections_detail", {})
-    for k in ["姿态", "神情", "面相"]:
-        v = sections.get(k)
-        if isinstance(v, dict):
-            detail_bucket[k] = v
-            features = v.get("features") if isinstance(v.get("features"), list) else []
-            features_txt = _join_cn(features)
-            parts = []
-            if features_txt:
-                parts.append(f"特征：{features_txt}")
-            if v.get("hexagram"):
-                parts.append(f"卦象：{v.get('hexagram')}")
-            if v.get("meaning"):
-                parts.append(f"含义：{v.get('meaning')}")
-            if v.get("advice"):
-                parts.append(f"建议：{v.get('advice')}")
-            sections[k] = "；".join([p for p in parts if p])
-    out["sections"] = sections
+    # 面相细分（透传）
+    face_parts = meta.get("face_parts")
+    if not isinstance(face_parts, dict):
+        meta["face_parts"] = {}
 
     domains = out.get("domains")
     if isinstance(domains, dict):
@@ -315,33 +312,22 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
         out["domains"] = []
 
     out["summary"] = out.get("summary") or ""
-    out["archetype"] = out.get("archetype") or ""
+    # archetype 若缺失则自动组合一个
     try:
         out["confidence"] = float(out.get("confidence", 0.0))
     except Exception:
         out["confidence"] = 0.0
 
-    if not isinstance(meta.get("triple_analysis"), dict):
-        sd = meta.get("sections_detail") or {}
-        if isinstance(sd, dict) and any(isinstance(sd.get(x), dict) for x in ["姿态", "神情", "面相"]):
-            def _mk(sd_key):
-                segd = sd.get(sd_key) or {}
-                return {
-                    "说明": "",
-                    "卦象": segd.get("hexagram", ""),
-                    "特征": segd.get("features", []),
-                    "解读": segd.get("meaning", ""),
-                    "性格倾向": segd.get("advice", ""),
-                }
+    if not out.get("archetype"):
+        ta2 = meta.get("triple_analysis") or {}
+        hexes = [
+            ta2.get("姿态", {}).get("卦象", ""),
+            ta2.get("神情", {}).get("卦象", ""),
+            ta2.get("面容", {}).get("卦象", ""),
+        ]
+        out["archetype"] = _compose_auto_archetype(hexes)
 
-            meta["triple_analysis"] = {
-                "姿态": _mk("姿态"),
-                "神情": _mk("神情"),
-                "面容": _mk("面相"),
-                "组合意境": "",
-                "总结": out.get("summary", ""),
-            }
-
+    # combo title
     ta2 = meta.get("triple_analysis") or {}
     hexes = [
         ta2.get("姿态", {}).get("卦象", ""),
@@ -352,15 +338,9 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
     if combo_title:
         meta["combo_title"] = combo_title
 
-    # === Build UI helpers for frontend ===
+    # === UI helpers ===
+    meta["headline"] = {"tag": out.get("archetype", ""), "confidence": out.get("confidence", 0.0)}
 
-    # 1) 顶部 tag：性格标签 + 可信度
-    meta["headline"] = {
-        "tag": out.get("archetype", ""),
-        "confidence": out.get("confidence", 0.0),
-    }
-
-    # 2) 分象标题：显示“姿态 → 艮卦（山）”等
     def _title_with_hex(section_key: str, ta_key: str):
         hexname = (ta2.get(ta_key, {}) or {}).get("卦象", "")
         symbol = BAGUA_SYMBOLS.get(hexname, "")
@@ -377,29 +357,22 @@ def _coerce_output(data: Dict[str, Any]) -> Dict[str, Any]:
         "面相": _title_with_hex("面相", "面容"),
     }
 
-    # 3) 卦象组合：标题 + 要点（供第一排 box 列出）
+    # 组合要点：从性格倾向提要 + 组合意境
     combo_points = []
     for k in ("姿态", "神情", "面容"):
         tend = (ta2.get(k, {}) or {}).get("性格倾向", "")
         if isinstance(tend, str) and tend.strip():
             combo_points.append(tend.strip())
-
     combo_yijing = (ta2.get("组合意境", "") or "").strip()
     if combo_yijing:
         combo_points.append(combo_yijing)
 
     combo_title_txt = meta.get("combo_title", "").strip()
     combo_full_title = f"🔮 卦象组合：{combo_title_txt}" if combo_title_txt else "🔮 卦象组合"
+    meta["combo_detail"] = {"title": combo_full_title, "bullets": combo_points[:6]}
 
-    meta["combo_detail"] = {
-        "title": combo_full_title,
-        "bullets": combo_points[:6],
-    }
-
-    # 4) 总结性格：加一行意境句
-    h1 = (ta2.get("姿态", {}) or {}).get("卦象", "")
-    h2 = (ta2.get("神情", {}) or {}).get("卦象", "")
-    h3 = (ta2.get("面容", {}) or {}).get("卦象", "")
+    # 总结 + 意境
+    h1, h2, h3 = hexes + ["", "", ""][:max(0, 3 - len(hexes))]
     s1, s2, s3 = BAGUA_SYMBOLS.get(h1, ""), BAGUA_SYMBOLS.get(h2, ""), BAGUA_SYMBOLS.get(h3, "")
     imagery = ""
     if s1 and s2 and s3:
@@ -456,12 +429,8 @@ async def upload(file: UploadFile = File(...)):
             }
             if result.get("oai_raw") is not None:
                 try:
-                    meta["debug"]["oai_choice_finish_reason"] = result["oai_raw"].choices[
-                        0
-                    ].finish_reason
-                    meta["debug"]["oai_has_tool_calls"] = bool(
-                        result["oai_raw"].choices[0].message.tool_calls
-                    )
+                    meta["debug"]["oai_choice_finish_reason"] = result["oai_raw"].choices[0].finish_reason
+                    meta["debug"]["oai_has_tool_calls"] = bool(result["oai_raw"].choices[0].message.tool_calls)
                 except Exception:
                     meta["debug"]["oai_choice_finish_reason"] = "n/a"
                     meta["debug"]["oai_has_tool_calls"] = "n/a"
