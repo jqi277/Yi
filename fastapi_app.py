@@ -1,5 +1,5 @@
-# fastapi_app.py  (v3.7.5 - mobile-first, improved prompt & zh-archetype fallback)
-import os, base64, json, logging, traceback, re
+# fastapi_app.py  (v3.7.5 - mobile route)
+import os, base64, json, logging, traceback
 from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -26,11 +26,10 @@ except Exception as e:
 
 BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}
 
-# ---------- helpers ----------
 def _to_data_url(content: bytes, content_type: str) -> str:
     return f"data:{content_type};base64,{base64.b64encode(content).decode('utf-8')}"
 
-def _build_tools_schema():
+def _build_tools_schema() -> List[Dict[str, Any]]:
     return [{
       "type":"function",
       "function":{
@@ -52,7 +51,7 @@ def _build_tools_schema():
       }
     }]
 
-def _json_hint() -> str:
+def _json_hint():
     return ("只以 JSON object 返回（必须 JSON）。示例:{\"summary\":\"…\",\"archetype\":\"…\",\"confidence\":0.9,"
             "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
             "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
@@ -62,16 +61,15 @@ def _json_hint() -> str:
 
 def _prompt_for_image():
     sys = (
-      "你是 Selfy AI 的易经观相助手（移动端场景）。"
-      "严格用“三象四段式”：姿态/神情/面容。每部分含：说明(1句)；卦象(艮/离/兑/乾/坤/震/巽/坎)；解读(1–3句)。"
-      "重要：把“性格倾向”合并进解读中，不另起段。"
-      "面相必须拆解五官：给【眉/眼/鼻/嘴/颧或下巴】各1句“特征”，并给出与该特征相配的卦象及“解读”。“解读”须解释性格/互动/决策倾向，禁止复述特征的原词。"
-      "若“神情”已提及某五官的动态/情绪，则在“五官”里换一个维度（形态、比例、纹理）描述，避免重复句。"
-      "随后生成："
-      "5) 卦象组合：依据三卦综合推理，写 4–6 条“新的要点洞见”，禁止只是拼接或复述三象原文；"
-      "6) 总结性格印象：20–40字，避免模板化；"
-      "7) 人格标签 archetype：给中文意境词（如“主导·亲和型/稳重·表达型/谨慎·包容型”等）。"
-      "严禁出现“面容和谐/五官端正/整体协调”等套话。"
+      "你是 Selfy AI 的易经观相助手。"
+      "严格用“三象四段式”分析：【姿态/神情/面容】。每部分含：说明(1句)；卦象(艮/离/兑/乾/坤/震/巽/坎)；解读(1–3句)；性格倾向(1–2句)。"
+      "重要：在输出时，把“性格倾向”自然地**融入解读**中（解读可相应加长），前端不单独展示“性格倾向”。"
+      "面相必须拆解五官：给【眉/眼/鼻/嘴/颧或下巴】各1句具体特征，并为每项标注一个卦象并解读，写入 meta.face_parts。"
+      "【避免重复】“解读”不得简单复述“特征”的字词；如“神情”已描述某五官动态/风格，则“面相-五官”应换角度（形态/比例/纹理/功能感等）。"
+      "然后：5) 卦象组合：基于三卦“综合推理”写 4–6 条要点（不得逐字重复三象原句）；"
+      "6) 总结性格印象：20–40字，与三卦强相关，避免模板化；"
+      "7) 人格标签 archetype：中文标签；若内部推导是英文，也要给出中文意境词。"
+      "明令禁止：出现“五官端正/整体面容和谐/面容和谐”等套话。"
       "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。本消息含“JSON”以满足 API 要求。"
     )
     user = "请严格按要求分析图片，并只以 JSON 格式通过函数返回。"
@@ -121,19 +119,19 @@ def _synthesize_combo(ta: Dict[str, Any]):
     traits = [traits_map.get(h,"") for h in hexes if h]
     if len(traits) >= 2:
         bullets.append(f"外在表现偏{traits[0]}，内在驱动更{traits[1]}。")
-    if "兑" in hexes: bullets.append("沟通亲和直接，重真实的互信与愉悦体验。")
-    if "坎" in hexes: bullets.append("决策前会评估不确定性与代价，偏稳健策略。")
+    if "兑" in hexes: bullets.append("沟通风格亲和而直接，重视真实与愉悦的互动。")
+    if "坎" in hexes: bullets.append("决策前会评估风险与后果，偏稳健。")
     if "震" in hexes: bullets.append("遇事行动果断，推进节奏快。")
     if "离" in hexes: bullets.append("表达清晰，擅长信息提炼与呈现。")
-    if "乾" in hexes: bullets.append("具主导与目标感，愿意承担责任。")
+    if "乾" in hexes: bullets.append("具备主导性与目标感，愿意承担责任。")
     if "坤" in hexes: bullets.append("处事包容稳妥，善于托底与承载团队。")
-    if "艮" in hexes: bullets.append("有边界与秩序感，做事沉稳可靠。")
-    if "巽" in hexes: bullets.append("倾向协商整合资源，善做协调者。")
-    seen = set(); out = []
+    if "艮" in hexes: bullets.append("有边界感与秩序感，做事沉稳可靠。")
+    if "巽" in hexes: bullets.append("倾向协商与整合资源，善做协调者。")
+    seen=set(); out=[]
     for b in bullets:
         if b not in seen:
             seen.add(b); out.append(b)
-        if len(out) >= 6: break
+        if len(out)>=5: break
     return hexes, out
 
 def _insight_for_domains(hexes: List[str]):
@@ -154,27 +152,16 @@ def _insight_for_domains(hexes: List[str]):
     lines["感情"] = "；".join(segs) if segs else "重视稳定关系，沟通直接。"
     return lines
 
-def _zh_archetype_fallback(meta: Dict[str,Any]) -> str:
-    tag = (meta.get("headline") or {}).get("tag","") or ""
-    if re.search(r'[\u4e00-\u9fa5]', tag):  # already Chinese
-        return tag
-    combo = (meta.get("combo_title") or "").split("+")
-    combo = [s.strip() for s in combo if s.strip()]
-    has = lambda h: h in combo
+def _archetype_cn_fallback(archetype: str, hexes: List[str]) -> str:
+    if archetype and any('\u4e00' <= ch <= '\u9fff' for ch in archetype):
+        return archetype
+    has = lambda h: h in hexes
     if has("乾") and has("兑"): return "主导·亲和型"
     if has("乾") and has("离"): return "主导·表达型"
     if has("艮") and has("坤"): return "稳重·包容型"
     if has("坎") and has("离"): return "谨慎·表达型"
     if has("震") and has("兑"): return "行动·亲和型"
-    if has("乾"): return "主导型"
-    if has("兑"): return "亲和型"
-    if has("坤"): return "包容型"
-    if has("艮"): return "稳重型"
-    if has("坎"): return "谨慎型"
-    if has("离"): return "表达型"
-    if has("震"): return "行动型"
-    if has("巽"): return "协调型"
-    return tag or "综合型"
+    return archetype or "综合型"
 
 def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     data = _inflate_dotted_keys(data)
@@ -207,7 +194,7 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
 
     def _title_with_hex(section_key: str, ta_key: str) -> str:
         hexname = (ta.get(ta_key) or {}).get("卦象","")
-        symbol = BAGUA_SYMBOLS.get(hexname,"")
+        symbol = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}.get(hexname,"")
         return f"{section_key} → {hexname}卦（{symbol}）" if hexname and symbol else (f"{section_key} → {hexname}卦" if hexname else section_key)
     meta["sections_titles"] = {
         "姿态": _title_with_hex("姿态","姿态"),
@@ -215,24 +202,20 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "面相": _title_with_hex("面相","面容")
     }
 
-    # headline
-    out["archetype"] = out.get("archetype","")
+    out["archetype"] = _archetype_cn_fallback(out.get("archetype",""), hexes)
     try: out["confidence"] = float(out.get("confidence",0.0))
     except Exception: out["confidence"] = 0.0
     meta["headline"] = {"tag": out["archetype"], "confidence": out["confidence"]}
-    # enforce zh tag
-    meta["headline"]["tag"] = _zh_archetype_fallback(meta)
 
     out["meta"] = meta
     return out
 
-# ---------- routes ----------
 @app.get("/health")
 def health(): return {"status":"ok"}
 
 @app.get("/", include_in_schema=False)
 def root():
-    return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a>")
+    return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a>")
 
 @app.head("/", include_in_schema=False)
 def root_head():
@@ -241,7 +224,6 @@ def root_head():
 @app.get("/version")
 def version(): return {"version":VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
 
-# ---------- main ----------
 def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
     if client is None: raise RuntimeError("OpenAI client not initialized")
     messages = _prompt_for_image()
@@ -297,3 +279,12 @@ async def upload(file: UploadFile = File(...)):
         body={"error":"Internal Server Error"}
         if DEBUG: body["debug"]={"message":str(e),"trace":traceback.format_exc()}
         return JSONResponse(status_code=500, content=body)
+
+# Serve mobile page at /mobile
+@app.get("/mobile", include_in_schema=False)
+def mobile():
+    try:
+        html = open("index_mobile.html", "r", encoding="utf-8").read()
+    except Exception:
+        html = "<h4>index_mobile.html not found</h4>"
+    return HTMLResponse(html)
