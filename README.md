@@ -1,22 +1,24 @@
-# Selfy AI v3.7.2 Logic + Mobile Layout + 近期状态
-
-- 运行版本：3.7.6；分析文风：3.7.2；移动端一列布局。
-- `/mobile` 路由直接返回 `index_mobile.html`；前端自动使用 `location.origin` 作为 API 地址。
+# Selfy AI v3.7.2 Logic + Mobile Layout (Refined)
+- 后端：`fastapi_app.py`（v3.7.7 runtime，v3.7.2 分析风格，三分象优化/卦象组合融合/事业与感情状态&建议分离）
+- 前端：`index_mobile.html`（移动端一列）
 
 ## 部署
-1. 把 `fastapi_app.py` 和 `index_mobile.html` 放到仓库根目录。
-2. Render 启动命令：
+1. 把这三个文件放到仓库根目录；Render 启动命令：
    ```bash
    uvicorn fastapi_app:app --host 0.0.0.0 --port $PORT --proxy-headers
    ```
-3. 环境变量：
+2. 环境变量：
    - `OPENAI_API_KEY`（必填）
    - `DEBUG=1`（可选）
 
+## 推送到 GitHub
+```bash
+cd D:\Project\Android_Projects\selfy_ai
+git add fastapi_app.py index_mobile.html README.md
+git commit -m "v3.7.2 mobile refined: section wording, combo synthesis, status/suggestion split"
+git pull --rebase origin main
+git push origin main
+```
+
 ## 使用
-部署完成后访问 `https://你的域名/mobile`。上传图片即可得到结果：
-- 三象展示为：
-  - 第二行：`卦象：乾卦（天）`
-  - 第三行：`说明 —— 解读；性格倾向`
-- 卦象组合：一段式总述（优先采用 `meta.triple_analysis.总结`）。
-- 事业/感情：补充“近期状态”，建议仍取 `meta.domains_detail`。
+部署后访问：`https://你的域名/mobile` 上传图片即可。

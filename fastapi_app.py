@@ -1,5 +1,5 @@
-# fastapi_app.py  (runtime v3.7.6, analysis logic v3.7.2, with /mobile route, status insights)
-import os, base64, json, logging, traceback
+# fastapi_app.py  (runtime v3.7.7, analysis logic v3.7.2, refined combo & status/suggestion)
+import os, base64, json, logging, traceback, re
 from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.7.6"
+RUNTIME_VERSION = "3.7.7"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()  # default 372
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
@@ -55,7 +55,6 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
     }]
 
 def _json_hint() -> str:
-    # 包含“JSON”字样以满足 response_format=json_object 的要求
     return ("只以 JSON object 返回（必须 JSON）。示例:{\"summary\":\"…\",\"archetype\":\"…\",\"confidence\":0.9,"
             "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
             "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
@@ -131,13 +130,43 @@ def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
     if "震" in s or "乾" in s: love.append("主动靠近、决断力较强")
     return {"事业": "；".join(biz), "感情": "；".join(love)}
 
-def _synthesize_titles(ta: Dict[str, Any]) -> Dict[str,str]:
-    # 仍提供，但前端不再使用此拼接形式
-    def _title(section: str, key: str) -> str:
-        hx = (ta.get(key) or {}).get("卦象","")
-        sym = BAGUA_SYMBOLS.get(hx,"")
-        return f"{section} → {hx}卦（{sym}）" if hx else section
-    return {"姿态":_title("姿态","姿态"), "神情":_title("神情","神情"), "面相":_title("面相","面容")}
+def _merge_status_and_detail(status: str, detail: str) -> str:
+    detail_first = detail.split("。")[0].strip() if detail else ""
+    if detail_first:
+        detail_first = re.sub(r"^(你|他|她|在事业上|在感情中|其|对方|目前|近期)[，、： ]*", "", detail_first)
+    parts = [p for p in [status, detail_first] if p]
+    return "；".join(parts)
+
+def _imperative_suggestion(detail: str) -> str:
+    if not detail: return ""
+    text = detail
+    replacements = [
+        (r"适合", "可优先考虑"),
+        (r"可以考虑", "可考虑"),
+        (r"需要", "建议重点"),
+        (r"应当", "建议"),
+        (r"能够", "可"),
+        (r"可能会", "留意可能"),
+        (r"有助于", "以便"),
+    ]
+    for pat, rep in replacements:
+        text = re.sub(pat, rep, text)
+    return text
+
+def _collect_and_trim_traits(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
+    traits = []
+    new_ta = {}
+    for k in ["姿态","神情","面容"]:
+        o = (ta.get(k) or {}).copy()
+        tend = (o.get("性格倾向") or "").strip()
+        if tend:
+            traits.append(tend)
+            o["性格倾向"] = ""  # 清空给前端，避免重复
+        new_ta[k] = o
+    for k in ta.keys():
+        if k not in new_ta:
+            new_ta[k] = ta[k]
+    return traits, new_ta
 
 def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
     data = _inflate_dotted_keys(data)
@@ -147,8 +176,9 @@ def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
     out["meta"] = meta
 
     ta = meta.get("triple_analysis") or {}
+    traits, ta = _collect_and_trim_traits(ta)
+    meta["triple_analysis"] = ta
 
-    # 组合卦
     hexes = [(ta.get("姿态") or {}).get("卦象",""),
              (ta.get("神情") or {}).get("卦象",""),
              (ta.get("面容") or {}).get("卦象","")]
@@ -156,17 +186,22 @@ def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
     if combo_title:
         meta["combo_title"] = combo_title
 
-    # 卦象组合卡：优先采用 ta["总结"] 作为“一段式总述”
-    one = (ta.get("总结") or out.get("summary",""))
+    one = (ta.get("总结") or out.get("summary","")).strip()
+    traits_text = "；".join([t for t in traits if t])
+    if traits_text:
+        if one and not one.endswith("。"): one += "。"
+        one = (one or "") + traits_text
     meta["overview_card"] = {
         "title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
         "summary": one
     }
 
-    # 三象标题（带卦）供前端备用
-    meta["sections_titles"] = _synthesize_titles(ta)
+    def _title(section: str, key: str) -> str:
+        hx = (ta.get(key) or {}).get("卦象","")
+        sym = BAGUA_SYMBOLS.get(hx,"")
+        return f"{section} → {hx}卦（{sym}）" if hx else section
+    meta["sections_titles"] = {"姿态":_title("姿态","姿态"), "神情":_title("神情","神情"), "面相":_title("面相","面容")}
 
-    # 标签中文兜底
     arch = (out.get("archetype") or "").strip()
     if arch and not any('\u4e00' <= ch <= '\u9fff' for ch in arch):
         s = set([h for h in hexes if h])
@@ -178,14 +213,23 @@ def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
         else: arch = "综合型"
         out["archetype"] = arch
 
-    # 新增：近期状态
-    meta["domains_status"] = _insight_for_domains(hexes)
+    status = _insight_for_domains(hexes)
+    dd = meta.get("domains_detail") or {}
+    merged_status = {
+        "事业": _merge_status_and_detail(status.get("事业",""), dd.get("金钱与事业","")),
+        "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
+    }
+    meta["domains_status"] = merged_status
+    meta["domains_suggestion"] = {
+        "事业": _imperative_suggestion(dd.get("金钱与事业","")),
+        "感情": _imperative_suggestion(dd.get("配偶与感情",""))
+    }
 
     try:
         out["confidence"] = float(out.get("confidence",0.0))
     except Exception:
         out["confidence"] = 0.0
-    meta["headline"] = {"tag": out["archetype"], "confidence": out["confidence"]}
+    meta["headline"] = {"tag": out.get("archetype",""), "confidence": out["confidence"]}
 
     out["meta"] = meta
     return out
@@ -214,7 +258,7 @@ def mobile():
         return HTMLResponse(f"<pre>index_mobile.html not found: {e}</pre>", status_code=500)
     return HTMLResponse(html)
 
-def _call_openai(messages):
+def _call_gpt(messages):
     if client is None:
         raise RuntimeError("OpenAI client not initialized")
     return client.chat.completions.create(
@@ -232,7 +276,7 @@ def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
         {"type":"text","text":messages[-1]["content"]},
         {"type":"image_url","image_url":{"url":data_url}}
     ]
-    resp = _call_openai(messages)
+    resp = _call_gpt(messages)
     choice = resp.choices[0]
     tool_calls = getattr(choice.message, "tool_calls", None)
     if tool_calls:
