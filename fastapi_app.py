@@ -90,6 +90,40 @@ def _call_openai(messages):
         messages=messages
     )
 
+def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
+    """
+    根据三象卦象给出“事业 / 感情”的近期状态关键词。
+    输出用分号连接，前端会再做排版。
+    """
+    s = set(h for h in hexes if h)
+
+    biz = []
+    if "乾" in s or "震" in s:
+        biz.append("推进力强、目标感明确")
+    if "坤" in s or "艮" in s:
+        biz.append("稳健务实、执行到位")
+    if "离" in s or "兑" in s:
+        biz.append("表达协作顺畅、善于影响")
+    if "坎" in s:
+        biz.append("风险意识较强、节奏更稳")
+    if "巽" in s:
+        biz.append("擅协调资源、善整合")
+
+    love = []
+    if "兑" in s:
+        love.append("互动亲和、沟通自然")
+    if "坤" in s:
+        love.append("重承诺与包容")
+    if "离" in s:
+        love.append("表达清晰、善于共情")
+    if "坎" in s:
+        love.append("安全感需求偏高、较敏感")
+    if "震" in s or "乾" in s:
+        love.append("主动靠近、决断力较强")
+
+    return {"事业": "；".join(biz), "感情": "；".join(love)}
+
+
 # ---------------- text post-processing ----------------
 def _clean_punct(s: str) -> str:
     if not s: return s
