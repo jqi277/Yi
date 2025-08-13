@@ -1,4 +1,4 @@
-# fastapi_app.py  (runtime v3.7.6, analysis logic v3.7.2, mobile route)
+# fastapi_app.py  (runtime v3.7.6, analysis logic v3.7.2, with /mobile route, status insights)
 import os, base64, json, logging, traceback
 from typing import Dict, Any, List
 
@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 
 RUNTIME_VERSION = "3.7.6"
-ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()  # "372" default
+ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()  # default 372
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
 
@@ -33,7 +33,6 @@ def _to_data_url(content: bytes, content_type: str) -> str:
     return f"data:{content_type};base64,{base64.b64encode(content).decode('utf-8')}"
 
 def _build_tools_schema() -> List[Dict[str, Any]]:
-    # v3 schema（与 372 期望一致）
     return [{
       "type":"function",
       "function":{
@@ -65,7 +64,6 @@ def _json_hint() -> str:
             "\"domains_detail\":{\"金钱与事业\":\"…(60–90字)\",\"配偶与感情\":\"…(60–90字)\"}}}")
 
 def _prompt_for_image_v372():
-    # 372 版语气与结构：保留“性格倾向”单独字段；卦象组合可与三象有适度重合；domains_detail 60–90 字建议
     sys = (
       "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
       "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分必须包含："
@@ -74,12 +72,11 @@ def _prompt_for_image_v372():
       "3) 解读：1–2句，基于卦象与观察做含义阐释；"
       "4) 性格倾向：1–2句，独立成段，不要与“解读”重复措辞。"
       "然后给出："
-      "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文 90–150 字，可与三象结论有适度重合；"
-      "6) 总结性格印象：20–40字，语言避免模板化；"
-      "7) 人格标签 archetype：2–5字中文，如“外冷内热/主导型/谨慎型”等。"
+      "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文 90–150 字（可与三象结论适度重合）；"
+      "6) 总结性格印象：20–40字，避免模板化；"
+      "7) 人格标签 archetype：2–5字中文，如“外冷内热/主导型/谨慎型”。"
       "面相需拆成五官：在 meta.face_parts 中，给【眉/眼/鼻/嘴/颧/下巴】（任选5项覆盖）各写“特征（外观）”与“解读（基于易经）”。"
-      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中分别写 60–90 字的建议文本。"
-      "避免套话：如“面容和谐/五官端正”等。"
+      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中分别写 60–90 字建议文本。"
       "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。本消息含“JSON”以满足 API 要求。"
     )
     user = "请按 3.7.2 风格分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
@@ -118,7 +115,24 @@ def _call_openai(messages):
         messages=messages
     )
 
+def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
+    s = set([h for h in hexes if h])
+    biz = []
+    if "乾" in s or "震" in s: biz.append("推进力强、目标感明确")
+    if "坤" in s or "艮" in s: biz.append("稳健务实、执行到位")
+    if "离" in s or "兑" in s: biz.append("表达协作顺畅、善于影响")
+    if "坎" in s: biz.append("风险意识较强、节奏更稳")
+    if "巽" in s: biz.append("擅协调资源、善整合")
+    love = []
+    if "兑" in s: love.append("互动亲和、沟通自然")
+    if "坤" in s: love.append("重承诺与包容")
+    if "离" in s: love.append("表达清晰、善于共情")
+    if "坎" in s: love.append("安全感需求偏高、较敏感")
+    if "震" in s or "乾" in s: love.append("主动靠近、决断力较强")
+    return {"事业": "；".join(biz), "感情": "；".join(love)}
+
 def _synthesize_titles(ta: Dict[str, Any]) -> Dict[str,str]:
+    # 仍提供，但前端不再使用此拼接形式
     def _title(section: str, key: str) -> str:
         hx = (ta.get(key) or {}).get("卦象","")
         sym = BAGUA_SYMBOLS.get(hx,"")
@@ -132,27 +146,30 @@ def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
     if not isinstance(meta, dict): meta = {}
     out["meta"] = meta
 
-    # sections 保持 372 原样（不合并“性格倾向”）
-    # triple_analysis->组合意境/总结 透传
     ta = meta.get("triple_analysis") or {}
 
-    # 组合卦标题
-    hexes = [(ta.get("姿态") or {}).get("卦象",""), (ta.get("神情") or {}).get("卦象",""), (ta.get("面容") or {}).get("卦象","")]
+    # 组合卦
+    hexes = [(ta.get("姿态") or {}).get("卦象",""),
+             (ta.get("神情") or {}).get("卦象",""),
+             (ta.get("面容") or {}).get("卦象","")]
     combo_title = " + ".join([h for h in hexes if h])
     if combo_title:
         meta["combo_title"] = combo_title
 
-    # 卦象组合卡：只放标题+summary（372 风格不过度生成要点）
-    meta["overview_card"] = {"title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合", "summary": out.get("summary","")}
+    # 卦象组合卡：优先采用 ta["总结"] 作为“一段式总述”
+    one = (ta.get("总结") or out.get("summary",""))
+    meta["overview_card"] = {
+        "title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
+        "summary": one
+    }
 
-    # 三象标题（带卦）
+    # 三象标题（带卦）供前端备用
     meta["sections_titles"] = _synthesize_titles(ta)
 
-    # 顶部标签与可信度（兜底中文）
+    # 标签中文兜底
     arch = (out.get("archetype") or "").strip()
     if arch and not any('\u4e00' <= ch <= '\u9fff' for ch in arch):
-        # 非中文，用卦象简易映射
-        s = set(hexes)
+        s = set([h for h in hexes if h])
         if "乾" in s and "兑" in s: arch = "主导·亲和型"
         elif "乾" in s and "离" in s: arch = "主导·表达型"
         elif "艮" in s and "坤" in s: arch = "稳重·包容型"
@@ -160,6 +177,9 @@ def _coerce_output_v372(data: Dict[str,Any]) -> Dict[str,Any]:
         elif "震" in s and "兑" in s: arch = "行动·亲和型"
         else: arch = "综合型"
         out["archetype"] = arch
+
+    # 新增：近期状态
+    meta["domains_status"] = _insight_for_domains(hexes)
 
     try:
         out["confidence"] = float(out.get("confidence",0.0))
@@ -194,10 +214,20 @@ def mobile():
         return HTMLResponse(f"<pre>index_mobile.html not found: {e}</pre>", status_code=500)
     return HTMLResponse(html)
 
+def _call_openai(messages):
+    if client is None:
+        raise RuntimeError("OpenAI client not initialized")
+    return client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.4,
+        tools=_build_tools_schema(),
+        tool_choice={"type":"function","function":{"name":"submit_analysis_v3"}},
+        response_format={"type":"json_object"},
+        messages=messages
+    )
+
 def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
-    if client is None: raise RuntimeError("OpenAI client not initialized")
     messages = _prompt_for_image_v372()
-    # 增加“JSON”字样 + 图片
     messages[-1]["content"] = [
         {"type":"text","text":messages[-1]["content"]},
         {"type":"image_url","image_url":{"url":data_url}}

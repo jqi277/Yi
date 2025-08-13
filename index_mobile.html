@@ -59,21 +59,18 @@
       <div class="space-y-4">
         <div class="card">
           <div class="h2 mb-1" id="titlePosture">🧍 姿态</div>
-          <div id="postureDesc" class="text-sm text-gray-700 mb-1"></div>
           <div id="postureHex" class="text-sm text-gray-700"></div>
           <div id="postureInterp" class="text-sm text-gray-700 mt-1"></div>
         </div>
 
         <div class="card">
           <div class="h2 mb-1" id="titleExpr">🙂 神情</div>
-          <div id="exprDesc" class="text-sm text-gray-700 mb-1"></div>
           <div id="exprHex" class="text-sm text-gray-700"></div>
           <div id="exprInterp" class="text-sm text-gray-700 mt-1"></div>
         </div>
 
         <div class="card">
           <div class="h2 mb-1" id="titleFace">👤 面相</div>
-          <div id="faceDesc" class="text-sm text-gray-700 mb-1"></div>
           <div id="faceHex" class="text-sm text-gray-700"></div>
           <div id="faceInterp" class="text-sm text-gray-700 mt-1"></div>
           <div class="mt-2">
@@ -115,6 +112,8 @@
 const $=(id)=>document.getElementById(id);
 $("apiBase").textContent=window.API_BASE; $("docs").href=window.API_BASE+"/docs"; $("docsLink").href=window.API_BASE+"/docs";
 
+const BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
+
 const drop=$("drop");
 drop.addEventListener("click",()=>$("file").click());
 drop.addEventListener("dragover",e=>{e.preventDefault(); drop.classList.add("border-indigo-400","bg-indigo-50/30");});
@@ -142,7 +141,18 @@ async function analyze(){
   finally{ $("progress").classList.add("hidden"); $("btnUpload").disabled=false; }
 }
 function showErr(msg){ const el=$("error"); if(!msg){el.classList.add("hidden"); el.textContent=""; return;} el.textContent=msg; el.classList.remove("hidden"); }
-function _s(txt){ return (typeof txt==="string")?txt.replace(/\n/g,"\\n"):txt; }
+
+function fmtSection(o){
+  const desc = (o?.["说明"]||"").trim();
+  const hex = (o?.["卦象"]||"").trim();
+  const interp = (o?.["解读"]||"").trim();
+  const tend = (o?.["性格倾向"]||"").trim();
+  const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
+  const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
+  let right = [interp, tend].filter(Boolean).join("；");
+  let line3 = desc ? (right ? (desc+" —— "+right) : desc) : right;
+  return {line2, line3};
+}
 
 function render(d){
   $("resultSec").classList.remove("hidden");
@@ -150,31 +160,30 @@ function render(d){
   const tag=(d?.meta?.headline?.tag||d?.archetype||"人格画像");
   const confVal=Number.isFinite(d?.meta?.headline?.confidence)?d.meta.headline.confidence:(d.confidence||0);
   $("archetypePill").textContent=tag; const conf=Math.round(confVal*100); $("confBar").style.width=Math.min(conf,100)+"%"; $("confText").textContent=conf+"%";
-  const titles=d?.meta?.sections_titles||{};
-  $("titlePosture").textContent="🧍 "+(titles["姿态"]||"姿态"); $("titleExpr").textContent="🙂 "+(titles["神情"]||"神情"); $("titleFace").textContent="👤 "+(titles["面相"]||"面相");
+
+  // 标题固定为“姿态/神情/面相”
+  $("titlePosture").textContent="🧍 姿态"; $("titleExpr").textContent="🙂 神情"; $("titleFace").textContent="👤 面相";
 
   const ta=d?.meta?.triple_analysis||{};
-  function seg(name){ const o=ta[name]||{}; return{desc:_s(o["说明"]||""), hex:o["卦象"]?("卦象："+o["卦象"]):"", interp:_s(o["解读"]||"")+(o["性格倾向"]?("；"+_s(o["性格倾向"])):"")};}
-  const s1=seg("姿态"), s2=seg("神情"), s3=seg("面容");
-  $("postureDesc").textContent=s1.desc; $("postureHex").textContent=s1.hex; $("postureInterp").textContent=s1.interp;
-  $("exprDesc").textContent=s2.desc; $("exprHex").textContent=s2.hex; $("exprInterp").textContent=s2.interp;
-  $("faceDesc").textContent=s3.desc; $("faceHex").textContent=s3.hex; $("faceInterp").textContent=s3.interp;
+  const s1=fmtSection(ta["姿态"]); $("postureHex").textContent=s1.line2; $("postureInterp").textContent=s1.line3;
+  const s2=fmtSection(ta["神情"]); $("exprHex").textContent=s2.line2; $("exprInterp").textContent=s2.line3;
+  const s3=fmtSection(ta["面容"]); $("faceHex").textContent=s3.line2; $("faceInterp").textContent=s3.line3;
 
   const fp=d?.meta?.face_parts||{}; const lines=[];
   [["眉","眉"],["眼","眼"],["鼻","鼻"],["嘴","嘴"],["颧/下巴","颧/下巴"]].forEach(([k,lab])=>{
-    const it=fp[k]; if(it){ const feat=_s(it["特征"]||""); const inter=_s(it["解读"]||""); lines.push((lab+"："+feat+(inter?("；"+inter):""))); }
+    const it=fp[k]; if(it){ const feat=(it["特征"]||"").trim(); const inter=(it["解读"]||"").trim(); lines.push(lab+"："+feat+(inter?("；"+inter):"")); }
   });
   $("faceParts").textContent=lines.join("\n");
 
-  const oc=d?.meta?.overview_card||{};
-  $("overviewTitle").textContent=oc.title||"🔮 卦象组合";
-  $("overviewLead").textContent=_s(oc.summary||d.summary||"");
+  const ta2=d?.meta?.triple_analysis||{};
+  const overviewOne = ta2["总结"] || d.summary || "";
+  $("overviewTitle").textContent = (d?.meta?.overview_card?.title) || "🔮 卦象组合";
+  $("overviewLead").textContent  = overviewOne;
 
-  const status=d?.meta?.domains_status||{}; const dd=d?.meta?.domains_detail||{};
-  $("bizInsight").textContent=_s(status["事业"]||"");
-  $("loveInsight").textContent=_s(status["感情"]||"");
-  $("bizBody").textContent=_s(dd["金钱与事业"]||"—");
-  $("loveBody").textContent=_s(dd["配偶与感情"]||"—");
+  $("bizInsight").textContent  = d?.meta?.domains_status?.["事业"]  || "";
+  $("loveInsight").textContent = d?.meta?.domains_status?.["感情"]  || "";
+  $("bizBody").textContent     = (d?.meta?.domains_detail?.["金钱与事业"]) || "—";
+  $("loveBody").textContent    = (d?.meta?.domains_detail?.["配偶与感情"]) || "—";
 }
 </script>
 </body>

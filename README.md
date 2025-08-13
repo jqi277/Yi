@@ -1,24 +1,22 @@
-# Selfy AI v3.7.2 Logic + Mobile Layout
+# Selfy AI v3.7.2 Logic + Mobile Layout + 近期状态
 
-- 后端运行版本：3.7.6（仅运行时版本号）；分析文风：**3.7.2**（保留“性格倾向”独立字段，卦象组合允许适度重合，domains_detail 60–90字）。
-- 移动端前端：`/mobile` 路由直接返回 `index_mobile.html`（一列纵向布局）。
-- `API_BASE = location.origin`，无需手动改域名。
+- 运行版本：3.7.6；分析文风：3.7.2；移动端一列布局。
+- `/mobile` 路由直接返回 `index_mobile.html`；前端自动使用 `location.origin` 作为 API 地址。
 
 ## 部署
-1. 将 `fastapi_app.py` 与 `index_mobile.html` 放到仓库根目录（与 `requirements.txt` 同级）。
-2. Render 启动命令保持：
+1. 把 `fastapi_app.py` 和 `index_mobile.html` 放到仓库根目录。
+2. Render 启动命令：
    ```bash
    uvicorn fastapi_app:app --host 0.0.0.0 --port $PORT --proxy-headers
    ```
 3. 环境变量：
    - `OPENAI_API_KEY`（必填）
-   - `DEBUG=1`（可选，开启调试日志）
-   - `ANALYSIS_VERSION=372`（默认即372）
+   - `DEBUG=1`（可选）
 
 ## 使用
-部署完成后，访问：`https://你的域名/mobile`  
-上传图片 → 点击“开始分析” → 返回卡片式结果。
-
-## 目录
-- `fastapi_app.py`：后端（372逻辑，包含 /mobile、/upload、/health、/version 等）
-- `index_mobile.html`：移动端页面（上传、展示）
+部署完成后访问 `https://你的域名/mobile`。上传图片即可得到结果：
+- 三象展示为：
+  - 第二行：`卦象：乾卦（天）`
+  - 第三行：`说明 —— 解读；性格倾向`
+- 卦象组合：一段式总述（优先采用 `meta.triple_analysis.总结`）。
+- 事业/感情：补充“近期状态”，建议仍取 `meta.domains_detail`。
