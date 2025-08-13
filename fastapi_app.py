@@ -79,13 +79,16 @@ def _build_tools_schema():
       }
     }]
 
+# --- OpenAI prompt (把“面容”=>“面相”，并要求返回 meta.triple_analysis) ---
 def _prompt_for_image_v372():
     sys = (
       "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
-      "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分包含："
+      "严格按“三象四段式”分析：【姿态/神情/面相】三部分。每部分包含："
       "1) 说明：1句，客观描绘；2) 卦象：仅写一个八卦名；3) 解读：1–2句；4) 性格倾向：1–2句。"
       "随后：5) 卦象组合（90–150字）；6) 总结性格印象（20–40字）；7) archetype（2–5字）。"
-      "同时在 meta.face_parts 中给【眉/眼/鼻/嘴/颧/下巴】（覆盖5项）特征与解读。"
+      "同时："
+      "· 在 meta.face_parts 中给【眉/眼/鼻/嘴/颧/下巴】（覆盖5项）特征与解读；"
+      "· 在 meta.triple_analysis 中分别给【姿态/神情/面相】的 {说明, 卦象, 解读, 性格倾向}。"
       "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中各写 60–90 字建议。"
       "通过 submit_analysis_v3 工具以 JSON 返回，不要输出自由文本。"
     )
@@ -105,10 +108,6 @@ def _call_oai(messages):
     )
 
 # ---------- HOTFIX: robust extraction for OpenAI responses ----------
-import os, json, logging
-
-DEBUG = os.getenv("DEBUG", "0") == "1"
-
 def _looks_like_json(s: str) -> bool:
     s = (s or "").strip()
     return s.startswith("{") and s.endswith("}")
@@ -176,7 +175,9 @@ def extract_selfy_payload(resp) -> dict:
 
 # --- Text cleaners ---
 DOMAIN_LEADS = r"(在(金钱与事业|配偶与感情|事业|感情)(方面|中|里)?|目前|近期|当下)"
-_STOPWORDS = r"(姿态|神情|面容|整体|气质|形象|给人以|一种|以及|并且|而且|更显|显得|展现出|流露出|透露出)"
+# --- Text cleaners（加入“面相”到停用词） ---
+_STOPWORDS = r"(姿态|神情|面相|面容|整体|气质|形象|给人以|一种|以及|并且|而且|更显|显得|展现出|流露出|透露出)"
+
 def _depronoun(s:str)->str:
     if not isinstance(s,str): return s
     s = re.sub(r"^(他|她|TA|你|对方|其)(的)?[，、： ]*", "", s.strip())
@@ -206,7 +207,7 @@ def _dedupe_smart(s:str)->str:
         parts = re.split(r"[，,；;]", sen)
         seen, kept = set(), []
         for p in parts:
-            t = p.strip(); 
+            t = p.strip()
             if not t: continue
             ck = _canon_key(t)
             if ck and ck not in seen:
@@ -311,8 +312,9 @@ def _make_domains(lex:Dict[str,Any], h1:str, h2:str, h3:str)->Dict[str,Dict[str,
 def _combine_sentence(desc:str, interp:str)->str:
     if not desc and not interp: return ""
     desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
+    # 增补“这种面相”前缀剔除
     interp = _neutralize(_depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")))
-    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容)[，、： ]*", "", interp)
+    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容|这种面相)[，、： ]*", "", interp)
     s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
     s = re.sub(r"[；;]+", "；", s); s = re.sub(r"，，+", "，", s)
     return _dedupe_smart(s)
@@ -329,14 +331,14 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
         desc = (o.get("说明") or ""); inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
         o["解读"] = merged; return o
-    for k in ["姿态","神情","面容"]:
+    for k in ["姿态","神情","面相"]:
         if isinstance(ta.get(k), dict): ta[k] = _apply(ta[k])
     meta["triple_analysis"] = ta
 
     # Trio hexes
     h1 = (ta.get("姿态") or {}).get("卦象","") or ""
     h2 = (ta.get("神情") or {}).get("卦象","") or ""
-    h3 = (ta.get("面容") or {}).get("卦象","") or ""
+    h3 = (ta.get("面相") or {}).get("卦象","") or ""
 
     # Load lexicon and synthesize
     lex = load_lexicon()
@@ -354,8 +356,25 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
     # Headline
     try:
         conf = float(out.get("confidence",0.0))
-    except Exception: conf = 0.0
+    except Exception:
+        conf = 0.0
     meta["headline"] = {"tag": (out.get("archetype") or "").strip(), "confidence": conf}
+
+    # ---- sections 兜底回填（来自 triple_analysis 的“解读”合并文本） ----
+    merged_zitai = (ta.get("姿态") or {}).get("解读","") if isinstance(ta.get("姿态"), dict) else ""
+    merged_shenqing = (ta.get("神情") or {}).get("解读","") if isinstance(ta.get("神情"), dict) else ""
+    merged_mianxiang = (ta.get("面相") or {}).get("解读","") if isinstance(ta.get("面相"), dict) else ""
+    sections = out.get("sections") or {}
+    if not isinstance(sections, dict): sections = {}
+    out["sections"] = {
+        "姿态": sections.get("姿态") or merged_zitai or "",
+        "神情": sections.get("神情") or merged_shenqing or "",
+        "面相": sections.get("面相") or merged_mianxiang or "",
+    }
+
+    # ---- domains 的最小兜底 ----
+    if not isinstance(out.get("domains"), list) or not out.get("domains"):
+        out["domains"] = ["金钱与事业","配偶与感情"]
 
     # Top-level clean
     def _clean(s):
@@ -368,6 +387,7 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
         return _dedupe_smart(s)
     out["summary"] = _clean(out.get("summary",""))
     out["archetype"] = _clean(out.get("archetype",""))
+
     # deep clean meta
     def _deep(x):
         if isinstance(x, dict): return {k:_deep(v) for k,v in x.items()}
@@ -399,7 +419,8 @@ def mobile():
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     try:
-        if not file: raise HTTPException(400,"No file")
+        if client is None:
+            raise HTTPException(503, "OpenAI client not initialized")
         ct = file.content_type or ""
         if not ct.startswith("image/"): raise HTTPException(415,f"Unsupported content type: {ct}")
         raw = await file.read()
@@ -409,27 +430,32 @@ async def upload(file: UploadFile = File(...)):
         data_url = _to_data_url(raw, ct)
         logger.info("[UPLOAD] %s %dB %s", file.filename, len(raw), ct)
 
+        # 1) 组装多模态消息（文本 + 图片）
         msgs = _prompt_for_image_v372()
         msgs[-1]["content"] = [
             {"type":"text","text":msgs[-1]["content"]},
             {"type":"image_url","image_url":{"url":data_url}}
         ]
+
+        # 2) 调用 OpenAI（用正式参数，而不是 [...] 占位符）
         resp = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[...],
-        response_format={"type": "json_object"},
-        tools=[...], tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
-        temperature=0.4,
+            model="gpt-4o",
+            messages=msgs,
+            response_format={"type": "json_object"},
+            tools=_build_tools_schema(),
+            tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
+            temperature=0.4,
         )
 
-        result = extract_selfy_payload(resp)
-
-        # 如果还没解析出来，直接回一个可诊断的错误提示（不会让前端空白）
-        if not result:
+        # 3) 解析 + 合成后处理
+        raw_payload = extract_selfy_payload(resp)
+        if not raw_payload:
             logging.error("[UPLOAD] Empty payload after extraction")
             return JSONResponse({"error": "empty_payload", "tip": "enable DEBUG=1 to log raw shapes"}, status_code=502)
 
-        return JSONResponse(result)
+        final_payload = _coerce_output(raw_payload)
+        return JSONResponse(final_payload)
+
     except HTTPException as he:
         if DEBUG:
             return JSONResponse(status_code=he.status_code, content={"error":he.detail,"debug":{"trace":traceback.format_exc()}})
