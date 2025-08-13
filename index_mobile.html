@@ -74,7 +74,7 @@
           <div id="faceHex" class="text-sm text-gray-700"></div>
           <div id="faceInterp" class="text-sm text-gray-700 mt-1"></div>
           <div class="mt-2">
-            <div class="text-xs text-gray-500 mb-1">五官观察</div>
+            <div class="text-xs text-gray-500 mb-1">五官细节</div>
             <div id="faceParts" class="text-sm text-gray-700 whitespace-pre-wrap hidden-block"></div>
             <button id="toggleParts" class="mt-2 text-xs text-indigo-600">展开更多</button>
           </div>
@@ -148,7 +148,7 @@ function fmtSection(o){
   const interp = (o?.["解读"]||"").trim();
   const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
   const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
-  const body = [desc, interp].filter(Boolean).join(" —— ");
+  const body = [desc, interp].filter(Boolean).join("，");
   const line3 = body ? ("解读："+body) : "";
   return {line2, line3};
 }
