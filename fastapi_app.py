@@ -104,6 +104,76 @@ def _call_oai(messages):
         messages=messages
     )
 
+# ---------- HOTFIX: robust extraction for OpenAI responses ----------
+import os, json, logging
+
+DEBUG = os.getenv("DEBUG", "0") == "1"
+
+def _looks_like_json(s: str) -> bool:
+    s = (s or "").strip()
+    return s.startswith("{") and s.endswith("}")
+
+def extract_selfy_payload(resp) -> dict:
+    """
+    Try all possible shapes:
+    1) tool_calls[0].function.arguments  (modern tools)
+    2) function_call.arguments            (older)
+    3) message.content as JSON string     (json_object fallback)
+    Return {} if none works.
+    """
+    payload = {}
+
+    try:
+        # 1) tool_calls
+        msg = resp.choices[0].message
+        if getattr(msg, "tool_calls", None):
+            for tc in msg.tool_calls:
+                fn = getattr(tc, "function", None)
+                if fn and getattr(fn, "name", "") == "submit_analysis_v3":
+                    args = getattr(fn, "arguments", "") or ""
+                    if args and _looks_like_json(args):
+                        payload = json.loads(args)
+                        break
+
+        # 2) function_call (older)
+        if not payload and getattr(msg, "function_call", None):
+            fc = msg.function_call
+            args = getattr(fc, "arguments", "") or ""
+            if args and _looks_like_json(args):
+                payload = json.loads(args)
+
+        # 3) message.content as JSON
+        if not payload:
+            content = getattr(msg, "content", "") or ""
+            if content and _looks_like_json(content):
+                payload = json.loads(content)
+
+    except Exception as e:
+        logging.error("[PARSE] exception: %s", e, exc_info=True)
+
+    # 最后兜底：确保关键字段存在，避免前端空白
+    if payload and isinstance(payload, dict):
+        payload.setdefault("summary", "")
+        payload.setdefault("archetype", "")
+        payload.setdefault("confidence", 0.0)
+        payload.setdefault("sections", {"姿态": "", "神情": "", "面相": ""})
+        payload.setdefault("domains", [])
+        payload.setdefault("meta", {})
+
+    if DEBUG:
+        try:
+            logging.debug("[PARSE] raw kind: tool_calls=%s, function_call=%s, content_len=%s",
+                          bool(getattr(resp.choices[0].message, "tool_calls", None)),
+                          bool(getattr(resp.choices[0].message, "function_call", None)),
+                          len((getattr(resp.choices[0].message, "content", "") or "")))
+            logging.debug("[PARSE] payload keys: %s", list(payload.keys()) if payload else [])
+        except Exception:
+            pass
+
+    return payload
+# ---------- /HOTFIX ----------
+
+
 # --- Text cleaners ---
 DOMAIN_LEADS = r"(在(金钱与事业|配偶与感情|事业|感情)(方面|中|里)?|目前|近期|当下)"
 _STOPWORDS = r"(姿态|神情|面容|整体|气质|形象|给人以|一种|以及|并且|而且|更显|显得|展现出|流露出|透露出)"
@@ -344,23 +414,22 @@ async def upload(file: UploadFile = File(...)):
             {"type":"text","text":msgs[-1]["content"]},
             {"type":"image_url","image_url":{"url":data_url}}
         ]
-        resp = _call_oai(msgs)
-        choice = resp.choices[0]
-        tool_calls = getattr(choice.message, "tool_calls", None)
-        if tool_calls:
-            args = json.loads(tool_calls[0].function.arguments)
-        else:
-            content = getattr(choice.message, "content", None)
-            if isinstance(content, str) and content.strip().startswith("{"):
-                args = json.loads(content)
-            else:
-                raise RuntimeError("Model did not return tool_calls.")
-        final_out = _coerce_output(args)
+        resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[...],
+        response_format={"type": "json_object"},
+        tools=[...], tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
+        temperature=0.4,
+        )
 
-        if DEBUG:
-            final_out.setdefault("meta",{}).setdefault("debug",{})["oai_finish"] = resp.choices[0].finish_reason
+        result = extract_selfy_payload(resp)
 
-        return JSONResponse(content=final_out, status_code=200)
+        # 如果还没解析出来，直接回一个可诊断的错误提示（不会让前端空白）
+        if not result:
+            logging.error("[UPLOAD] Empty payload after extraction")
+            return JSONResponse({"error": "empty_payload", "tip": "enable DEBUG=1 to log raw shapes"}, status_code=502)
+
+        return JSONResponse(result)
     except HTTPException as he:
         if DEBUG:
             return JSONResponse(status_code=he.status_code, content={"error":he.detail,"debug":{"trace":traceback.format_exc()}})
