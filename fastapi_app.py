@@ -8,7 +8,7 @@ import os, json, re, base64, logging, traceback
 from typing import Any, Dict, List, Tuple
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse, Response
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
@@ -313,7 +313,7 @@ def _combine_sentence(desc:str, interp:str)->str:
     if not desc and not interp: return ""
     desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
     interp = _neutralize(_depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")))
-    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容|这种面相)[，、： ]*", "", interp)
+    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面相)[，、： ]*", "", interp)
     s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
     s = re.sub(r"[；;]+", "；", s); s = re.sub(r"，，+", "，", s)
     return _dedupe_smart(s)
@@ -330,7 +330,7 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
         desc = (o.get("说明") or ""); inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
         o["解读"] = merged; return o
-    for k in ["姿态","神情","面相"]:   # 面相
+    for k in ["姿态","神情","面相"]:
         if isinstance(ta.get(k), dict): ta[k] = _apply(ta[k])
     meta["triple_analysis"] = ta
 
@@ -384,11 +384,6 @@ def health(): return {"status":"ok"}
 @app.get("/", include_in_schema=False)
 def root():
     return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a>")
-
-# Explicit HEAD handler for Render health check on "/"
-@app.head("/", include_in_schema=False)
-def root_head():
-    return Response(status_code=200)
 
 @app.get("/version")
 def version(): return {"runtime":RUNTIME_VERSION,"analysis":ANALYSIS_VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
@@ -451,9 +446,3 @@ async def upload(file: UploadFile = File(...)):
         body={"error":"Internal Server Error"}
         if DEBUG: body["debug"]={"message":str(e),"trace":traceback.format_exc()}
         return JSONResponse(status_code=500, content=body)
-
-# Local run entrypoint (Render uses start command; keeping for local/dev)
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", "10000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
