@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>Selfy AI — 易经观相（移动版）</title>
-  <script>window.API_BASE = location.origin || "https://yi-t31x.onrender.com";</script>
+  <script>window.API_BASE = location.origin || "http://127.0.0.1:10000";</script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body{background:radial-gradient(900px 540px at 50% -180px,#f8fafc 0%,#f1f5f9 60%,#e5e7eb 100%);}
@@ -17,7 +17,6 @@
 </head>
 <body class="text-[15px] text-gray-900">
   <div class="max-w-md mx-auto p-4 space-y-4">
-
     <header class="flex items-center justify-between">
       <div>
         <div class="text-xl font-bold tracking-tight">Selfy AI</div>
@@ -88,7 +87,6 @@
       <div class="card">
         <div class="h2 mb-1" id="overviewTitle">🔮 卦象组合</div>
         <div id="overviewLead" class="text-sm text-gray-800 mb-1"></div>
-        <div id="overviewBullets" class="text-sm text-gray-800 whitespace-pre-wrap"></div>
       </div>
 
       <div class="card">
@@ -129,7 +127,8 @@ $("btnUpload").addEventListener("click", analyze);
 $("copyBtn").addEventListener("click", async ()=>{ try{await navigator.clipboard.writeText(document.body.innerText); const b=$("copyBtn"); const t=b.textContent; b.textContent="已复制"; setTimeout(()=>b.textContent=t,1200);}catch(e){} });
 $("toggleParts").addEventListener("click", ()=>{
   const el=$("faceParts"); const btn=$("toggleParts");
-  if(el.classList.contains("hidden-block")){el.classList.remove("hidden-block"); btn.textContent="收起";}else{el.classList.add("hidden-block"); btn.textContent="展开更多";}
+  if(el.classList.contains("hidden-block")){el.classList.remove("hidden-block"); btn.textContent="收起";}
+  else{el.classList.add("hidden-block"); btn.textContent="展开更多";}
 });
 
 async function analyze(){
@@ -143,63 +142,39 @@ async function analyze(){
   finally{ $("progress").classList.add("hidden"); $("btnUpload").disabled=false; }
 }
 function showErr(msg){ const el=$("error"); if(!msg){el.classList.add("hidden"); el.textContent=""; return;} el.textContent=msg; el.classList.remove("hidden"); }
-function _sanitize(s){ return (typeof s==="string") ? s.replace(/\\n/g,"\\n") : s; }
-
-function chineseArchetypeFallback(d){
-  const tag=(d?.meta?.headline?.tag||d?.archetype||"").trim();
-  if(tag && /[\\u4e00-\\u9fa5]/.test(tag)) return tag;
-  const combo=(d?.meta?.combo_title||"").split("+").map(s=>s.trim());
-  const has=h=>combo.includes(h);
-  let out="综合型";
-  if(has("乾")&&has("兑")) out="主导·亲和型";
-  else if(has("乾")&&has("离")) out="主导·表达型";
-  else if(has("艮")&&has("坤")) out="稳重·包容型";
-  else if(has("坎")&&has("离")) out="谨慎·表达型";
-  else if(has("震")&&has("兑")) out="行动·亲和型";
-  return out;
-}
+function _s(txt){ return (typeof txt==="string")?txt.replace(/\n/g,"\\n"):txt; }
 
 function render(d){
   $("resultSec").classList.remove("hidden");
 
-  const tag=chineseArchetypeFallback(d);
+  const tag=(d?.meta?.headline?.tag||d?.archetype||"人格画像");
   const confVal=Number.isFinite(d?.meta?.headline?.confidence)?d.meta.headline.confidence:(d.confidence||0);
   $("archetypePill").textContent=tag; const conf=Math.round(confVal*100); $("confBar").style.width=Math.min(conf,100)+"%"; $("confText").textContent=conf+"%";
-
   const titles=d?.meta?.sections_titles||{};
   $("titlePosture").textContent="🧍 "+(titles["姿态"]||"姿态"); $("titleExpr").textContent="🙂 "+(titles["神情"]||"神情"); $("titleFace").textContent="👤 "+(titles["面相"]||"面相");
 
-  const t=d?.meta?.triple_analysis||{};
-  function seg(name){ const o=t[name]||{}; return{ desc:_sanitize(o["说明"]||""), hex:o["卦象"]?("卦象："+o["卦象"]):"", interp:(o["解读"]?_sanitize(o["解读"]):"") + (o["性格倾向"]?("；"+_sanitize(o["性格倾向"])):"") };}
+  const ta=d?.meta?.triple_analysis||{};
+  function seg(name){ const o=ta[name]||{}; return{desc:_s(o["说明"]||""), hex:o["卦象"]?("卦象："+o["卦象"]):"", interp:_s(o["解读"]||"")+(o["性格倾向"]?("；"+_s(o["性格倾向"])):"")};}
   const s1=seg("姿态"), s2=seg("神情"), s3=seg("面容");
   $("postureDesc").textContent=s1.desc; $("postureHex").textContent=s1.hex; $("postureInterp").textContent=s1.interp;
   $("exprDesc").textContent=s2.desc; $("exprHex").textContent=s2.hex; $("exprInterp").textContent=s2.interp;
   $("faceDesc").textContent=s3.desc; $("faceHex").textContent=s3.hex; $("faceInterp").textContent=s3.interp;
 
   const fp=d?.meta?.face_parts||{}; const lines=[];
-  const exprText=(s2.desc+"；"+s2.interp).replace(/\\s+/g,"").slice(0,90);
   [["眉","眉"],["眼","眼"],["鼻","鼻"],["嘴","嘴"],["颧/下巴","颧/下巴"]].forEach(([k,lab])=>{
-    const it=fp[k];
-    if(it){ let feat=_sanitize(it["特征"]||""); let inter=_sanitize(it["解读"]||"");
-      if(inter && feat){ inter = inter.replace(new RegExp(feat.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&'),"g"),"").replace(/；；+/g,"；").replace(/^；|；$/g,""); }
-      let line=(lab+"："+(feat||"—")+(inter?("；"+inter):"")).trim();
-      const key=line.replace(/\\s+/g,"").slice(0,90);
-      if(!exprText || exprText.indexOf(key)===-1) lines.push(line);
-    }
+    const it=fp[k]; if(it){ const feat=_s(it["特征"]||""); const inter=_s(it["解读"]||""); lines.push((lab+"："+feat+(inter?("；"+inter):""))); }
   });
-  $("faceParts").textContent=lines.join("\\n");
+  $("faceParts").textContent=lines.join("\n");
 
   const oc=d?.meta?.overview_card||{};
   $("overviewTitle").textContent=oc.title||"🔮 卦象组合";
-  $("overviewLead").textContent=_sanitize(oc.summary||d.summary||"");
-  const bs=Array.isArray(oc.bullets)?oc.bullets:[];
-  $("overviewBullets").textContent=bs.length?("• "+_sanitize(bs.join("\\n• "))):"";
+  $("overviewLead").textContent=_s(oc.summary||d.summary||"");
 
-  const status=d?.meta?.domains_status||{}; const ddl=d?.meta?.domains_detail_long||{};
-  $("bizInsight").textContent=_sanitize(status["事业"]||"—");
-  $("loveInsight").textContent=_sanitize(status["感情"]||"—");
-  $("bizBody").textContent=_sanitize(ddl["事业"]||"—");
-  $("loveBody").textContent=_sanitize(ddl["感情"]||"—");
+  const status=d?.meta?.domains_status||{}; const dd=d?.meta?.domains_detail||{};
+  $("bizInsight").textContent=_s(status["事业"]||"");
+  $("loveInsight").textContent=_s(status["感情"]||"");
+  $("bizBody").textContent=_s(dd["金钱与事业"]||"—");
+  $("loveBody").textContent=_s(dd["配偶与感情"]||"—");
 }
 </script>
 </body>
