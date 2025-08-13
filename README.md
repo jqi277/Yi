@@ -1,10 +1,24 @@
-# Selfy Pack v2.6
-- 后端：fastapi_app.py（3.5逻辑 + 长度约束）
-- 前端：四区块顺序 = 卦象组合 → 三象 → 总结 → 金钱与事业 / 配偶与感情
-使用：
-1) 用 fastapi_app.py 覆盖你的后端文件并部署；
-2) 编辑 frontend/index.html 顶部 API 地址；
-3) 双击前端页面或部署为静态站点。
+# Selfy AI — 移动版（主/辅/基推导版）
 
+**后端**：`fastapi_app.py`（runtime v3.8.0）  
+**前端**：`index_mobile.html`（移动端优化 + 复制全文整洁输出）
 
-> 更新：移动端渲染合并句式、去分号、五官细节命名、卦象组合改为易经式综合总结。
+## 本地启动
+```bash
+python -m venv .venv
+# Windows
+.\.venv\Scripts\Activate.ps1
+# macOS/Linux
+source .venv/bin/activate
+pip install -r requirements.txt
+export OPENAI_API_KEY=你的密钥   # Windows: $env:OPENAI_API_KEY="..."
+uvicorn fastapi_app:app --reload
+# 访问
+# http://127.0.0.1:8000/mobile
+# http://127.0.0.1:8000/docs
+```
+
+## Render 启动命令
+- Build Command: `pip install -r requirements.txt`
+- Start Command: `uvicorn fastapi_app:app --host 0.0.0.0 --port $PORT`
+- 环境变量：`OPENAI_API_KEY`（必须），`DEBUG=1`（可选）

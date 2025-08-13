@@ -1,4 +1,4 @@
-# fastapi_app.py  (runtime v3.7.9, analysis logic v3.7.2, post-processor for phrasing & synthesis)
+# fastapi_app.py  (runtime v3.8.0, analysis logic v3.7.2, humanized phrasing + 主/辅/基 synthesis)
 import os, base64, json, logging, traceback, re, math
 from typing import Dict, Any, List
 
@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.7.9"
+RUNTIME_VERSION = "3.8.0"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()  # default 372
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
@@ -63,6 +63,7 @@ def _json_hint() -> str:
             "\"domains_detail\":{\"金钱与事业\":\"…(60–90字)\",\"配偶与感情\":\"…(60–90字)\"}}}")
 
 def _prompt_for_image_v372():
+    # 说明：保留 3.7.2 的核心判定逻辑，不动分析，只规范输出结构
     sys = (
       "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
       "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分必须包含："
@@ -80,6 +81,33 @@ def _prompt_for_image_v372():
     )
     user = "请按 3.7.2 风格分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
     return [{"role":"system","content":sys},{"role":"user","content":user}]
+
+# ===== 文本后处理：去代词 / 去复读 / 人话化 =====
+
+def _depronoun(s: str) -> str:
+    """去掉“他/她/TA/你/其/对方/在…上/中/目前/近期”等口头起句，使语句客观中性"""
+    if not isinstance(s, str): return s
+    s = s.strip()
+    s = re.sub(r"^(他|她|TA|你|对方|其)(的)?[，、： ]*", "", s)
+    s = re.sub(r"^(在(事业|感情|生活)[上中]|目前|近期)[，、： ]*", "", s)
+    return s
+
+def _dedupe_phrase(s: str) -> str:
+    """以逗号/句号切分做有序去重，避免“复读机”"""
+    if not isinstance(s, str): return s
+    parts = re.split(r"[，,。\.]", s)
+    seen, kept = set(), []
+    for p in parts:
+        t = p.strip()
+        if not t: continue
+        if t not in seen:
+            seen.add(t)
+            kept.append(t)
+    out = "，".join(kept)
+    out = re.sub(r"(，){2,}", "，", out).strip("，")
+    return out
+
+# ----- OpenAI 调用 -----
 
 def _inflate_dotted_keys(obj: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(obj, dict): return obj
@@ -104,6 +132,7 @@ def _inflate_dotted_keys(obj: Dict[str, Any]) -> Dict[str, Any]:
             out[k] = _inflate_dotted_keys(out[k])
     return out
 
+
 def _call_openai(messages):
     return client.chat.completions.create(
         model="gpt-4o",
@@ -115,104 +144,135 @@ def _call_openai(messages):
     )
 
 # ---------- Synthesis helpers ----------
+# 注：以下词义用于“组合推导”的提示，不是模板；可视为“术语词库”。
 HEX_SUMMARY = {
-    "乾":"自信·领导·果断", "坤":"包容·稳定·承载", "震":"行动·突破·起势", "巽":"协调·渗透·说服",
-    "坎":"谨慎·探深·智谋", "离":"明晰·表达·洞察", "艮":"止定·边界·稳重", "兑":"亲和·交流·悦人"
+    "乾":"自信·领导·果断",     # 易经术语：乾为天，健行，主刚健与主导
+    "坤":"包容·稳定·承载",     # 坤为地，厚德载物，主柔顺与承载
+    "震":"行动·突破·起势",     # 震为雷，动而行，主启动与开拓
+    "巽":"协调·渗透·说服",     # 巽为风，入而不争，主渗透与调和
+    "坎":"谨慎·探深·智谋",     # 坎为水，险而智，主风险意识与谋略
+    "离":"明晰·表达·洞察",     # 离为火，附丽明，主洞察与表达
+    "艮":"止定·边界·稳重",     # 艮为山，止于所当止，主定力与边界
+    "兑":"亲和·交流·悦人"      # 兑为泽，说也，主欣悦与沟通
 }
 
 def _combine_sentence(desc: str, interp: str) -> str:
-    """合并‘说明 + 解读’，去掉 —— 与多余标点，保留观察细节"""
+    """合并‘说明 + 解读’，去代词、去重复，让句子更像人说话"""
     if not desc and not interp: return ""
-    desc = (desc or "").strip().rstrip("；;。")
-    interp = (interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")
-    # 去口头起句
+    desc = _depronoun((desc or "").strip().rstrip("；;。"))
+    interp = _depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。"))
+    # 去口头化起句
     interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容)[，、： ]*", "", interp)
-    if desc and interp:
-        s = f"{desc}，{interp}。"
-    else:
-        s = f"{desc or interp}。"
+    s = f"{desc}，{interp}。" if (desc and interp) else f"{desc or interp}。"
     s = re.sub(r"[；;]+", "，", s)
     s = re.sub(r"，，+", "，", s)
+    s = _dedupe_phrase(s)
     return s
 
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
-    """根据三象卦象做 60–90 字综合总结，不机械拼装"""
-    keys = [h for h in hexes if h]
+    """
+    主/辅/基推导规则：
+    - 主（姿态）定大势（相当于外在“动象/外卦”）；
+    - 辅（神情）看运用与对人（承上启下，调性与交互方式）；
+    - 基（面容）看底色与长期（地基/下卦，稳定倾向）。
+    输出风格：先给“合象总括”，再以“主/辅/基”三分阐明；允许少量专业术语，并保持人话化。
+    """
+    zh, sh, bh = (hexes + ["", "", ""])[:3]  # 姿态=主，神情=辅，面容=基
+    keys = [h for h in [zh, sh, bh] if h]
     if not keys:
-        base = (ta.get("总结") or "") + ("。" + "；".join(traits) if traits else "")
+        base = (ta.get("总结") or "") + ("；" + "；".join(traits) if traits else "")
         return base.strip("；")
-    # 核心词
-    words = [HEX_SUMMARY.get(h, "") for h in keys]
-    words = "、".join([w for w in words if w])
-    # 从三象解读里抽取关键词（非常轻）
+
+    def w(h): return HEX_SUMMARY.get(h, "")
+
+    words = "、".join([w(h) for h in keys if w(h)])
+    lead = f"三象相合，取其象意为「{words}」。" if words else "三象相合。"
+
+    # 主 / 辅 / 基 结构；术语注释见 HEX_SUMMARY
+    p_main = f"主{zh}（{w(zh)}）" if zh else ""
+    p_sub  = f"辅{sh}（{w(sh)}）" if sh else ""
+    p_base = f"基{bh}（{w(bh)}）" if bh else ""
+
+    seq = "，".join([p for p in [p_main, p_sub, p_base] if p])
+
+    # 抽取每象解读的一小段，用于“落地感”
     snippets = []
     for k in ["姿态","神情","面容"]:
         inter = (ta.get(k) or {}).get("解读","")
-        if inter:
-            # 取前 12 字
-            snippets.append(inter[:12])
-    snippet = "；".join(snippets[:2])
-    trait_text = "；".join(traits[:2])
-    text = f"三象相合，取其象意为「{words}」。{snippet}。"
-    if trait_text:
-        text += f"{trait_text}。"
-    # 长度控制到 ~60–90 字
-    text = re.sub(r"[；;]+", "；", text)
-    return text
+        if inter: snippets.append(inter[:14])
+    snippet_text = "；".join(snippets[:2])
+
+    out = lead + seq
+    if snippet_text:
+        out += f"。{snippet_text}。"
+
+    # 性格倾向（traits）适度融入，避免复读
+    if traits:
+        trait_text = "；".join([t[:12] for t in traits[:2]])
+        if trait_text:
+            out += trait_text + "。"
+
+    out = re.sub(r"[；;]+", "；", out)
+    out = _dedupe_phrase(out)
+    return out
 
 def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
+    """基于卦象给“近期状态”的要点，弱模板、强卦意（更像即时表达）"""
     s = set([h for h in hexes if h])
     biz = []
-    if "乾" in s or "震" in s: biz.append("推进力强、目标感明确")
-    if "坤" in s or "艮" in s: biz.append("稳健务实、执行到位")
-    if "离" in s or "兑" in s: biz.append("表达协作顺畅、善于影响")
-    if "坎" in s: biz.append("风险意识较强、节奏更稳")
-    if "巽" in s: biz.append("擅协调资源、善整合")
+    # 事业：从“势-法-守-险-合”五个角度勾勒
+    if "乾" in s or "震" in s: biz.append("推进有力、节奏向前")
+    if "离" in s: biz.append("表达清楚、复盘到位")
+    if "兑" in s or "巽" in s: biz.append("善谈判协同、能带动人")
+    if "坤" in s or "艮" in s: biz.append("落地稳、边界明、抗干扰")
+    if "坎" in s: biz.append("风险意识强、方案留后手")
+
     love = []
-    if "兑" in s: love.append("互动亲和、沟通自然")
-    if "坤" in s: love.append("重承诺与包容")
-    if "离" in s: love.append("表达清晰、善于共情")
-    if "坎" in s: love.append("安全感需求偏高、较敏感")
-    if "震" in s or "乾" in s: love.append("主动靠近、决断力较强")
+    # 感情：从“亲密-表达-安全-主动-边界”五个角度勾勒
+    if "兑" in s: love.append("氛围轻松、互动自然")
+    if "离" in s: love.append("善表达想法、共情到位")
+    if "坤" in s: love.append("重承诺与照顾")
+    if "坎" in s: love.append("在意安全感、较敏感")
+    if "震" in s or "乾" in s: love.append("关键时会主动")
+    if "艮" in s: love.append("保持分寸与稳定")
     return {"事业": "；".join(biz), "感情": "；".join(love)}
 
 def _merge_status_and_detail(status: str, detail: str) -> str:
+    """把 GPT 的领域文案与我们基于卦象的状态要点合并，去代词、去复读"""
     detail_first = detail.split("。")[0].strip() if detail else ""
-    if detail_first:
-        detail_first = re.sub(r"^(你|他|她|在事业上|在感情中|其|对方|目前|近期)[，、： ]*", "", detail_first)
-    parts = [p for p in [status, detail_first] if p]
+    detail_first = _depronoun(detail_first)
+    parts = [p for p in [_depronoun(status), detail_first] if p]
     text = "；".join(parts).rstrip("；")
-    return text
+    return _dedupe_phrase(text)
 
 def _imperative_suggestion(detail: str, hexes: List[str], domain: str) -> str:
-    # 将原有建议文本加工为更“可执行”的建议，并参考卦象给出导向
+    """
+    以卦象导向生成“可执行建议”，避免千篇一律；
+    - 事业：结合 乾/震（取势）、离（明晰表达）、兑/巽（协同）、坤/艮（稳守）、坎（风控）
+    - 感情：结合 兑（亲和）、坤（承载）、离（表达）、乾/震（主动）、坎（止疑）、艮（边界）
+    """
     if not detail: detail = ""
     s = set([h for h in hexes if h])
     tips = []
     if domain == "事业":
-        if "乾" in s or "震" in s: tips.append("制定阶段目标并主动拿结果")
-        if "离" in s: tips.append("强化公开表达与复盘")
-        if "兑" in s or "巽" in s: tips.append("多用协作影响推进关键人")
-        if "坤" in s or "艮" in s: tips.append("保持节奏与边界，先稳后进")
-        if "坎" in s: tips.append("预设风险与计划 B")
+        if "乾" in s or "震" in s: tips.append("把阶段目标拉清楚，今天就推进一小步")
+        if "离" in s: tips.append("把复盘公开出来，用数据说话")
+        if "兑" in s or "巽" in s: tips.append("约一场关键协同，先换位再谈目标")
+        if "坤" in s or "艮" in s: tips.append("定边界与节奏，不抢不拖")
+        if "坎" in s: tips.append("列出前三个风险，准备B计划")
     else:
-        if "兑" in s: tips.append("多用轻松语气与及时反馈")
-        if "坤" in s: tips.append("给足安全感并兑现承诺")
-        if "离" in s: tips.append("坦诚沟通想法与界限")
-        if "震" in s or "乾" in s: tips.append("在关键节点主动表达与推进")
-        if "坎" in s: tips.append("避免过度猜测，多求证再判断")
-    # 组合
-    base = detail.strip().rstrip("；")
+        if "兑" in s: tips.append("用轻松语气回应，及时给反馈")
+        if "坤" in s: tips.append("把在意的事说清楚，并兑现承诺")
+        if "离" in s: tips.append("直说真实想法，也说清界限")
+        if "震" in s or "乾" in s: tips.append("重要节点别犹豫，主动一点")
+        if "坎" in s: tips.append("别先入为主，多求证再判断")
+        if "艮" in s: tips.append("尊重彼此节奏，保留各自空间")
+
+    base = _depronoun(detail.strip()).rstrip("；")
     add = "；".join(tips[:3])
-    if base and add:
-        out = base + "。建议：" + add + "。"
-    elif add:
-        out = "建议：" + add + "。"
-    else:
-        out = base or ""
-    # 文本清理
+    out = (base + ("。建议：" if base else "建议：") + add + "。") if add else base
     out = re.sub(r"[；;]+", "；", out)
-    return out
+    return _dedupe_phrase(out)
 
 def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
     """收集三象里的'性格倾向'，并把每象的‘说明+解读’合并为一句"""
@@ -228,7 +288,7 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
         merged = _combine_sentence(desc, inter)
         o["说明"] = desc.strip().rstrip("；;。")
         o["解读"] = merged.strip()
-        o["性格倾向"] = ""  # 交给组合卡合并
+        o["性格倾向"] = ""  # 倾向统一融入组合卡，避免复读
         new_ta[key] = o
     for k in ta.keys():
         if k not in new_ta:
@@ -246,19 +306,17 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     traits, ta = _collect_traits_and_merge(ta)
     meta["triple_analysis"] = ta
 
-    # 组合卦
+    # 组合卦（标题）
     hexes = [(ta.get("姿态") or {}).get("卦象",""),
              (ta.get("神情") or {}).get("卦象",""),
              (ta.get("面容") or {}).get("卦象","")]
     combo_title = " + ".join([h for h in hexes if h])
     meta["combo_title"] = combo_title
 
-    # 组合总结（易经式推演）
+    # 组合总结（主/辅/基推导）
     synthesized = _synthesize_combo(hexes, ta, traits)
-    one = (ta.get("总结") or out.get("summary","")).strip()
-    # 优先综合总结；如果空，再回退原总结
-    overview = synthesized or one
-    overview = overview.strip().rstrip("；;")
+    one = (ta.get("总结") or out.get("summary",""))
+    overview = (synthesized or one).strip().rstrip("；;")
     meta["overview_card"] = {"title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
                              "summary": overview}
 
@@ -283,19 +341,20 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
     }
 
-    # 全局文本轻清理：去多余分号
+    # 全局文本轻清理：统一标点 + 去代词 + 去复读
     def _clean(s):
         if not isinstance(s, str): return s
         s = s.replace("——", "，")
         s = re.sub(r"[；;]+", "；", s)
         s = re.sub(r"；([。！])", r"\1", s)
         s = re.sub(r"([。！？])；", r"\1", s)
+        s = _depronoun(s)
+        s = _dedupe_phrase(s)
         return s
 
     out["summary"] = _clean(out.get("summary",""))
     out["archetype"] = _clean(out.get("archetype",""))
 
-    # 清理 meta 和 sections 内部的标点
     def _deep_clean(x):
         if isinstance(x, dict):
             return {k:_deep_clean(v) for k,v in x.items()}

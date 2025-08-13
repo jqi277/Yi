@@ -123,7 +123,48 @@ $("file").addEventListener("change",e=>{const f=e.target.files?.[0]; if(f) setFi
 function setFile(f){const url=URL.createObjectURL(f); $("preview").src=url; $("previewWrap").classList.remove("hidden"); window._file=f;}
 
 $("btnUpload").addEventListener("click", analyze);
-$("copyBtn").addEventListener("click", async ()=>{ try{await navigator.clipboard.writeText(document.body.innerText); const b=$("copyBtn"); const t=b.textContent; b.textContent="已复制"; setTimeout(()=>b.textContent=t,1200);}catch(e){} });
+
+// 复制全文：仅复制结果区的整洁文案
+$("copyBtn").addEventListener("click", async ()=>{
+  try{
+    const blocks = [];
+    const get = (id)=> (($(id)?.textContent||"").trim());
+
+    blocks.push("Selfy AI（移动版）");
+    blocks.push("人格画像："+ get("archetypePill") + "｜可信度 " + get("confText"));
+
+    blocks.push("🧍 姿态");
+    blocks.push(get("postureHex"));
+    blocks.push(get("postureInterp"));
+
+    blocks.push("🙂 神情");
+    blocks.push(get("exprHex"));
+    blocks.push(get("exprInterp"));
+
+    blocks.push("👤 面相");
+    blocks.push(get("faceHex"));
+    blocks.push(get("faceInterp"));
+    const fp = get("faceParts"); if(fp) blocks.push("五官细节：\n"+fp);
+
+    blocks.push(get("overviewTitle"));
+    blocks.push(get("overviewLead"));
+
+    blocks.push("💼 事业｜近期状态");
+    blocks.push(get("bizInsight"));
+    blocks.push("💼 事业｜近期建议");
+    blocks.push(get("bizBody"));
+
+    blocks.push("💗 感情｜近期状态");
+    blocks.push(get("loveInsight"));
+    blocks.push("💗 感情｜近期建议");
+    blocks.push(get("loveBody"));
+
+    const text = blocks.filter(Boolean).join("\n");
+    await navigator.clipboard.writeText(text);
+    const b=$("copyBtn"); const t=b.textContent; b.textContent="已复制"; setTimeout(()=>b.textContent=t,1200);
+  }catch(e){}
+});
+
 $("toggleParts").addEventListener("click", ()=>{
   const el=$("faceParts"); const btn=$("toggleParts");
   if(el.classList.contains("hidden-block")){el.classList.remove("hidden-block"); btn.textContent="收起";}
@@ -143,9 +184,10 @@ async function analyze(){
 function showErr(msg){ const el=$("error"); if(!msg){el.classList.add("hidden"); el.textContent=""; return;} el.textContent=msg; el.classList.remove("hidden"); }
 
 function fmtSection(o){
-  const desc = (o?.["说明"]||"").trim();
+  const rmPronoun = (s)=> (s||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/,"");
+  const desc = rmPronoun(o?.["说明"]);
   const hex = (o?.["卦象"]||"").trim();
-  const interp = (o?.["解读"]||"").trim();
+  const interp = rmPronoun(o?.["解读"]);
   const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
   const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
   const body = [desc, interp].filter(Boolean).join("，");
