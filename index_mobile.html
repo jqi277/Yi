@@ -148,8 +148,8 @@ function fmtSection(o){
   const interp = (o?.["解读"]||"").trim();
   const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
   const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
-  const body = [desc, interp].filter(Boolean).join("，");
-  const line3 = body ? ("解读："+body) : "";
+  // 已在后端合并“说明+解读”，前端仅加“解读：”前缀
+  const line3 = interp ? ("解读："+interp) : "";
   return {line2, line3};
 }
 
@@ -169,7 +169,12 @@ function render(d){
 
   const fp=d?.meta?.face_parts||{}; const lines=[];
   [["眉","眉"],["眼","眼"],["鼻","鼻"],["嘴","嘴"],["颧/下巴","颧/下巴"]].forEach(([k,lab])=>{
-    const it=fp[k]; if(it){ const feat=(it["特征"]||"").trim(); const inter=(it["解读"]||"").trim(); lines.push(lab+"："+feat+(inter?("；"+inter):"")); }
+    const it=fp[k]; if(it){
+      const feat=(it["特征"]||"").trim().replace(/[；;]+$/,"");
+      const inter=(it["解读"]||"").trim().replace(/[；;]+$/,"");
+      const one= inter ? `${lab}：${feat}。${inter}。` : `${lab}：${feat}。`;
+      lines.push(one.replace(/。。+/g,"。"));
+    }
   });
   $("faceParts").textContent=lines.join("\n");
 
