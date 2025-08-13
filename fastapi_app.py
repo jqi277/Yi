@@ -207,7 +207,7 @@ def _dedupe_smart(s:str)->str:
         parts = re.split(r"[，,；;]", sen)
         seen, kept = set(), []
         for p in parts:
-            t = p.strip()
+            t = p.strip(); 
             if not t: continue
             ck = _canon_key(t)
             if ck and ck not in seen:
@@ -312,7 +312,6 @@ def _make_domains(lex:Dict[str,Any], h1:str, h2:str, h3:str)->Dict[str,Dict[str,
 def _combine_sentence(desc:str, interp:str)->str:
     if not desc and not interp: return ""
     desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
-    # 增补“这种面相”前缀剔除
     interp = _neutralize(_depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")))
     interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容|这种面相)[，、： ]*", "", interp)
     s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
@@ -331,14 +330,14 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
         desc = (o.get("说明") or ""); inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
         o["解读"] = merged; return o
-    for k in ["姿态","神情","面相"]:
+    for k in ["姿态","神情","面相"]:   # 面相
         if isinstance(ta.get(k), dict): ta[k] = _apply(ta[k])
     meta["triple_analysis"] = ta
 
     # Trio hexes
     h1 = (ta.get("姿态") or {}).get("卦象","") or ""
     h2 = (ta.get("神情") or {}).get("卦象","") or ""
-    h3 = (ta.get("面相") or {}).get("卦象","") or ""
+    h3 = (ta.get("面相") or {}).get("卦象","") or "" 
 
     # Load lexicon and synthesize
     lex = load_lexicon()
@@ -356,25 +355,8 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
     # Headline
     try:
         conf = float(out.get("confidence",0.0))
-    except Exception:
-        conf = 0.0
+    except Exception: conf = 0.0
     meta["headline"] = {"tag": (out.get("archetype") or "").strip(), "confidence": conf}
-
-    # ---- sections 兜底回填（来自 triple_analysis 的“解读”合并文本） ----
-    merged_zitai = (ta.get("姿态") or {}).get("解读","") if isinstance(ta.get("姿态"), dict) else ""
-    merged_shenqing = (ta.get("神情") or {}).get("解读","") if isinstance(ta.get("神情"), dict) else ""
-    merged_mianxiang = (ta.get("面相") or {}).get("解读","") if isinstance(ta.get("面相"), dict) else ""
-    sections = out.get("sections") or {}
-    if not isinstance(sections, dict): sections = {}
-    out["sections"] = {
-        "姿态": sections.get("姿态") or merged_zitai or "",
-        "神情": sections.get("神情") or merged_shenqing or "",
-        "面相": sections.get("面相") or merged_mianxiang or "",
-    }
-
-    # ---- domains 的最小兜底 ----
-    if not isinstance(out.get("domains"), list) or not out.get("domains"):
-        out["domains"] = ["金钱与事业","配偶与感情"]
 
     # Top-level clean
     def _clean(s):
@@ -387,7 +369,6 @@ def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
         return _dedupe_smart(s)
     out["summary"] = _clean(out.get("summary",""))
     out["archetype"] = _clean(out.get("archetype",""))
-
     # deep clean meta
     def _deep(x):
         if isinstance(x, dict): return {k:_deep(v) for k,v in x.items()}
@@ -403,6 +384,11 @@ def health(): return {"status":"ok"}
 @app.get("/", include_in_schema=False)
 def root():
     return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a>")
+
+# Explicit HEAD handler for Render health check on "/"
+@app.head("/", include_in_schema=False)
+def root_head():
+    return Response(status_code=200)
 
 @app.get("/version")
 def version(): return {"runtime":RUNTIME_VERSION,"analysis":ANALYSIS_VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
@@ -465,3 +451,9 @@ async def upload(file: UploadFile = File(...)):
         body={"error":"Internal Server Error"}
         if DEBUG: body["debug"]={"message":str(e),"trace":traceback.format_exc()}
         return JSONResponse(status_code=500, content=body)
+
+# Local run entrypoint (Render uses start command; keeping for local/dev)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", "10000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
