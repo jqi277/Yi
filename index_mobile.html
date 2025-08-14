@@ -13,7 +13,11 @@
     .h2{font-weight:600;font-size:16px;}
     .stickybar{position:sticky;top:0;z-index:40;backdrop-filter:blur(6px);background:rgba(255,255,255,.85);}
     .hidden-block{max-height:6.5rem;overflow:hidden;}
-  </style>
+  
+    #overviewLead, #bizInsight, #loveInsight, #faceParts {
+      white-space: pre-line;
+    }
+</style>
 </head>
 <body class="text-[15px] text-gray-900">
   <div class="max-w-md mx-auto p-4 space-y-4">
@@ -195,7 +199,7 @@ function neutralize(s){
 
 function fmtSection(o){
   const desc = (o?.["说明"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
-  const hex = (o?.["卦象"]||"").trim();
+  const hex = (o?.["卦象"]||"").trim().replace(/[。\.\s]+$/,"").replace(/卦$/,"");
   const interp = (o?.["解读"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
   const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
   const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
