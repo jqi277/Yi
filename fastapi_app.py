@@ -192,34 +192,58 @@ def _relation_plain(rel: str, pos: str) -> str:
 
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
-    keys = [h for h in [zh, sh, bh] if h]
-    if not keys: return ""
+    if not any([zh, sh, bh]):
+        return ""
 
-    def vw(h, key): 
-        return (WUXING.get(h) or {}).get(key, "")
+    lines = []
 
-    # 1) 专业开头（主/辅/基 + 五行/德性）
-    parts = []
+    def persona_line(role: str, h: str) -> str:
+        ele = (WUXING.get(h) or {}).get("element", "")
+        vir = (WUXING.get(h) or {}).get("virtue", "")
+        sym = BAGUA_SYMBOLS.get(h, "")
+        return f"{role}{h}（{ele}·{sym}）：{vir}"
+
+    def rel_phrase(a: str, b: str):
+        A = (WUXING.get(a) or {}).get("element", "")
+        B = (WUXING.get(b) or {}).get("element", "")
+        if not A or not B: return "", ""
+        if SHENG.get(B) == A: return f"{B}生{A}", "相生"
+        if KE.get(B) == A:    return f"{B}克{A}", "相克"
+        if A == B:            return f"{A}同{B}", "比和"
+        return f"{B}并{A}", "相并"
+
+    # 三象定位（每个一行）
     for role, h in (("主", zh), ("辅", sh), ("基", bh)):
-        if not h: continue
-        ele = vw(h,"element"); pol = vw(h,"polarity"); vir = vw(h,"virtue")
-        sym = BAGUA_SYMBOLS.get(h,"")
-        seg = f"{role}{h}（{sym}），属{ele}为{pol}，{vir}"
-        parts.append(seg)
-    lead = "；".join(parts) + "。"
+        if h:
+            lines.append(persona_line(role, h))
 
-    # 2) 关系白话解释 + 主风格白话
-    rel1 = _rel(vw(zh,"element"), vw(sh,"element")) if zh and sh else ""
-    rel2 = _rel(vw(bh,"element"), vw(zh,"element")) if bh and zh else ""
-    rel_texts = []
-    if rel1: rel_texts.append(_relation_plain(rel1, "mf"))
-    if rel2: rel_texts.append(_relation_plain(rel2, "bm"))
-    style = _style_by_main_plain(zh) if zh else "整体风格平衡"
+    # 两条关系行（新格式）
+    mf_pair, mf_rel = rel_phrase(zh, sh)
+    bm_pair, bm_rel = rel_phrase(bh, zh)
+    if mf_rel:
+        lines.append(_pair_label(zh, sh, mf_rel, "辅"))
+    if bm_rel:
+        lines.append(_pair_label(zh, bh, bm_rel, "基"))
 
-    tail = " ".join(rel_texts + [style])
+    # 收束句：主风格 + 两特质关键词
+    def kw(h: str):
+        s = HEX_SUMMARY.get(h, "")
+        if not s: return "", ""
+        parts = s.split("·")
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return parts[0], ""
 
-    out = f"三象相合：{lead}{tail}。"
-    return _dedupe_smart(out)
+    k1a, k1b = kw(zh)
+    k2a, k2b = kw(sh)
+    left = k1b or k1a or "主导力"
+    right = k2b or k2a or "亲和力"
+    style = _style_by_main_plain(zh)
+    soft = "外刚内柔" if (mf_rel in ("相生", "比和") and bm_rel in ("相生", "比和")) else "张弛有度"
+    summary = f"三者结合，形成{soft}的特质：既有{left}，又具{right}。{style}。"
+    lines.append(summary)
+
+    return "\n".join(lines)
 
 # ---- 状态 & 建议（更人话、更场景） ----
 def _human_status_sentence(s: set, domain: str) -> str:
