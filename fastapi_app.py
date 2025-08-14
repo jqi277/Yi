@@ -230,7 +230,7 @@ def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) ->
         return (WUXING.get(h) or {}).get("virtue", "")
 
     def rel_from_to(a: str, b: str):
-        # a -> b 的五行方向（用于 主×辅：写辅→主； 基×主：写基→主）
+        # a -> b 的五行方向（主×辅写“辅→主”，基×主写“基→主”）
         A, B = wx(a), wx(b)
         if not A or not B:
             return "", ""
@@ -242,10 +242,11 @@ def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) ->
             return f"{A}同{B}", "比和"
         return f"{A}并{B}", "相并"
 
-    # 关系（按对主方向）
+    # 关系（按“对主”的方向）
     mf_pair, mf_rel = rel_from_to(sh, zh)   # 辅 → 主
     bm_pair, bm_rel = rel_from_to(bh, zh)   # 基 → 主
 
+    # 行为语义：主-辅 与 基-主 分别给不同解释，更贴合你示例
     mf_note = {
         "相生": "同频协同，执行干脆",
         "相克": "风格有张力，推进需更多协调",
@@ -255,35 +256,48 @@ def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) ->
 
     bm_note = {
         "相生": "根基助推，底盘给力",
-        "相克": "旧经验牵扯，当下取舍要稳",
+        "相克": "旧经验牵扯，取舍要稳",
         "比和": "内外一致，表达与行动不打架",
         "相并": "资源与目标各有侧重",
     }.get(bm_rel, "")
 
+    # 三条“人物线”（专业提示）：主 / 辅 / 基
     lines = []
-    title = " + ".join([h for h in [zh, sh, bh] if h])
-    lines.append(f"🔮 卦象组合：{title}")
     if zh: lines.append(f"主{zh}（{wx(zh)}·{sym(zh)}）：{virtue(zh)}")
     if sh: lines.append(f"辅{sh}（{wx(sh)}·{sym(sh)}）：{virtue(sh)}")
     if bh: lines.append(f"基{bh}（{wx(bh)}·{sym(bh)}）：{virtue(bh)}")
+
+    # 两条“关系线”（不使用乘号，按你的格式）
     if mf_rel: lines.append(f"主与辅（{mf_pair}）{mf_rel}：{mf_note}")
     if bm_rel: lines.append(f"基与主（{bm_pair}）{bm_rel}：{bm_note}")
 
-    # 收束句
-    style = _style_by_main_plain(zh) if zh else "整体风格平衡"
-    def kw(h: str):
-        s = HEX_SUMMARY.get(h, "")
-        if not s:
-            return ("", "")
-        parts = s.split("·")
-        return (parts[1] if len(parts) > 1 else parts[0], parts[0])
-    left_kw, _ = kw(zh)
-    right_kw, _ = kw(sh)
-    left_kw = left_kw or "主导力"
-    right_kw = right_kw or "亲和力"
-    soft = "外刚内柔" if (mf_rel in ("相生","比和") and bm_rel in ("相生","比和")) else "张弛有度"
-    lines.append(f"三者结合，形成{soft}的特质：既有{left_kw}，又具{right_kw}。" + (f"{style}。" if style else ""))
+    # —— 收束为“整体格局”一句，更有易经味，长度稍加
+    OUTER = {
+        "乾":"外显刚健", "震":"外显奋发", "坤":"外显厚重", "艮":"外显持重",
+        "离":"外显明晰", "兑":"外显亲和", "巽":"外显通达", "坎":"外显谨慎"
+    }
+    INNER = {
+        "离":"内蕴明辨", "兑":"内蕴亲和", "坤":"内蕴承载", "艮":"内蕴定力",
+        "坎":"内蕴洞察", "巽":"内蕴协调", "震":"内蕴动能", "乾":"内蕴骨干"
+    }
 
+    outer = OUTER.get(zh, "外显平衡")
+    inner = INNER.get(sh, "内蕴均衡")
+
+    # 策略句按“关系态势”自适应
+    def strategy(mf: str, bm: str) -> str:
+        support = {"相生", "比和"}
+        if mf == "相克" or bm == "相克":
+            return "宜主动引领局势，同时在磨合中沉淀实力"
+        if mf in support and bm in support:
+            return "宜顺势整合资源，放大协同成效"
+        if mf == "相并" or bm == "相并":
+            return "宜明确优先级，分工并进，归一于目标"
+        return "宜稳中求进，先定原则再扩张"
+
+    lines.append(f"整体格局：{outer}，{inner}，{strategy(mf_rel, bm_rel)}。")
+
+    # 注意：这里不再把“🔮 卦象组合 …”塞进正文，避免与卡片标题重复
     return "\n".join(lines)
 
 def _human_status_sentence(s: set, domain: str) -> str:
