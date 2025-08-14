@@ -190,99 +190,37 @@ def _relation_plain(rel: str, pos: str) -> str:
         if rel == "同气相求": return "内外一致：想法和做法不打架"
         return "内在与目标各走各的：用简单规则把它们拢在一起"
 
-
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
-    if not any([zh, sh, bh]):
-        return ""
+    keys = [h for h in [zh, sh, bh] if h]
+    if not keys: return ""
 
-    def elem(h: str) -> str:
-        return (WUXING.get(h) or {}).get("element", "")
+    def vw(h, key): 
+        return (WUXING.get(h) or {}).get(key, "")
 
-    def sym(h: str) -> str:
-        return BAGUA_SYMBOLS.get(h, "")
+    # 1) 专业开头（主/辅/基 + 五行/德性）
+    parts = []
+    for role, h in (("主", zh), ("辅", sh), ("基", bh)):
+        if not h: continue
+        ele = vw(h,"element"); pol = vw(h,"polarity"); vir = vw(h,"virtue")
+        sym = BAGUA_SYMBOLS.get(h,"")
+        seg = f"{role}{h}（{sym}），属{ele}为{pol}，{vir}"
+        parts.append(seg)
+    lead = "；".join(parts) + "。"
 
-    def virtue(h: str) -> str:
-        return (WUXING.get(h) or {}).get("virtue", "")
+    # 2) 关系白话解释 + 主风格白话
+    rel1 = _rel(vw(zh,"element"), vw(sh,"element")) if zh and sh else ""
+    rel2 = _rel(vw(bh,"element"), vw(zh,"element")) if bh and zh else ""
+    rel_texts = []
+    if rel1: rel_texts.append(_relation_plain(rel1, "mf"))
+    if rel2: rel_texts.append(_relation_plain(rel2, "bm"))
+    style = _style_by_main_plain(zh) if zh else "整体风格平衡"
 
-    def rel_line(main_hex: str, other_hex: str, which: str) -> (str, str):
-        """
-        which: '辅' or '基'
-        内括号文案方向为 other -> main，例如 土生金、水克火、金同金、木并金
-        返回：关系行文本、关系类型（相生/相克/比和/相并）
-        """
-        A = elem(main_hex); B = elem(other_hex)
-        if not (A and B):
-            return "", ""
-        if A == B:
-            inner = f"{A}同{B}"; rel = "比和"; expl = "同频协同，执行干脆"
-        elif SHENG.get(B) == A:
-            inner = f"{B}生{A}"; rel = "相生"; expl = "根基助推，底盘给力" if which == "基" else "配合顺畅，优势互补"
-        elif KE.get(B) == A:
-            inner = f"{B}克{A}"; rel = "相克"; expl = "旧经验牵扯，当下取舍要稳" if which == "基" else "风格有张力，推进需更多协调"
-        else:
-            inner = f"{B}并{A}"; rel = "相并"; expl = "资源与目标各有侧重" if which == "基" else "关注点不同，各擅其长"
-        if which == "辅":
-            line = f"主与辅（{inner}）{rel}：{expl}"
-        else:
-            line = f"基与主（{inner}）{rel}：{expl}"
-        return line, rel
+    tail = " ".join(rel_texts + [style])
 
-    lines: list[str] = []
+    out = f"三象相合：{lead}{tail}。"
+    return _dedupe_smart(out)
 
-    # 1) 三象定位：主 / 辅 / 基
-    if zh:
-        lines.append(f"主{zh}（{elem(zh)}·{sym(zh)}）：{virtue(zh)}")
-    if sh:
-        lines.append(f"辅{sh}（{elem(sh)}·{sym(sh)}）：{virtue(sh)}")
-    if bh:
-        lines.append(f"基{bh}（{elem(bh)}·{sym(bh)}）：{virtue(bh)}")
-
-    # 2) 两条关系行
-    mf_rel = bm_rel = ""
-    if zh and sh:
-        mf_line, mf_rel = rel_line(zh, sh, "辅")
-        if mf_line:
-            lines.append(mf_line)
-    if bh and zh:
-        bm_line, bm_rel = rel_line(zh, bh, "基")
-        if bm_line:
-            lines.append(bm_line)
-
-    # 3) 收束句
-    soft = "外刚内柔" if (mf_rel in ("相生", "比和") and bm_rel in ("相生", "比和")) else "张弛有度"
-
-    def kw(h: str) -> str:
-        s = HEX_SUMMARY.get(h, "")
-        if not s:
-            return ""
-        parts = s.split("·")
-        return parts[1] if len(parts) >= 2 else parts[0]
-
-    left = kw(zh) or "主导力"
-    right = kw(sh) or "亲和力"
-
-    if zh in ("乾", "震"):
-        style = "行事节奏偏主动。"
-    elif zh in ("坤", "艮"):
-        style = "行事节奏偏稳妥。"
-    elif zh == "离":
-        style = "行事节奏偏清晰表达。"
-    elif zh == "兑":
-        style = "行事节奏偏亲和。"
-    elif zh == "巽":
-        style = "行事节奏偏协调。"
-    elif zh == "坎":
-        style = "行事节奏偏谨慎。"
-    else:
-        style = ""
-
-    summary = f"三者结合，形成{soft}的特质：既有{left}，又具{right}。"
-    if style:
-        summary += style
-    lines.append(summary)
-
-    return "\n".join(lines)
 # ---- 状态 & 建议（更人话、更场景） ----
 def _human_status_sentence(s: set, domain: str) -> str:
     lines = []
@@ -414,8 +352,7 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
     }
 
-    
-def _clean(s):
+    def _clean(s):
         if not isinstance(s, str): return s
         s = s.replace("——", "，")
         s = re.sub(r"[；;]+", "；", s)
@@ -423,10 +360,7 @@ def _clean(s):
         s = re.sub(r"([。！？])；", r"\1", s)
         s = _depronoun(s)
         s = _neutralize(s)
-        # 清理“预示着上/显示出上/表明上”等残影
-        s = re.sub(r"(预示着|显示出|表明)上", r"\1", s)
         return _dedupe_smart(s)
-
 
     out["summary"] = _clean(out.get("summary",""))
     out["archetype"] = _clean(out.get("archetype",""))
