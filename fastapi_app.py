@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.8.3"
+RUNTIME_VERSION = "3.8.5-ux"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
@@ -190,38 +190,102 @@ def _relation_plain(rel: str, pos: str) -> str:
         if rel == "同气相求": return "内外一致：想法和做法不打架"
         return "内在与目标各走各的：用简单规则把它们拢在一起"
 
+
+def _pair_label(main_hex: str, other_hex: str, relation: str, which: str) -> str:
+    """which: '辅' or '基'；输出“主X（金）×辅/基Y（土）：土生金 → 助力/制衡/比和/并行（白话）”"""
+    if not (main_hex and other_hex and relation): return ""
+    A = (WUXING.get(main_hex) or {}).get("element","")
+    B = (WUXING.get(other_hex) or {}).get("element","")
+    if not (A and B): return ""
+    # 方向：other → main
+    if SHENG.get(B) == A: arrow, tag = "生", "助力"
+    elif KE.get(B) == A: arrow, tag = "克", "制衡"
+    elif A == B:         arrow, tag = "同", "比和"
+    else:                arrow, tag = "并", "并行"
+    zh = f"主{main_hex}（{A}）×{which}{other_hex}（{B}）：{B}{arrow}{A} → {tag}"
+    note = {"助力":"配合顺畅，优势互补", "制衡":"风格有张力，推进需更多协调", "比和":"同频协同，执行干脆", "并行":"关注点不同，各擅其长"}[tag]
+    return zh + f"（{note}）"
+
+def _persona_line(h: str) -> str:
+    if not h: return ""
+    ele = (WUXING.get(h) or {}).get("element","")
+    vir = (WUXING.get(h) or {}).get("virtue","")
+    return f"{h}（{ele}）：{vir}"
+
+
+
+
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
-    keys = [h for h in [zh, sh, bh] if h]
-    if not keys: return ""
+    if not any([zh, sh, bh]):
+        return ""
 
-    def vw(h, key): 
-        return (WUXING.get(h) or {}).get(key, "")
+    def wx(h: str) -> str:
+        return (WUXING.get(h) or {}).get("element", "")
 
-    # 1) 专业开头（主/辅/基 + 五行/德性）
-    parts = []
-    for role, h in (("主", zh), ("辅", sh), ("基", bh)):
-        if not h: continue
-        ele = vw(h,"element"); pol = vw(h,"polarity"); vir = vw(h,"virtue")
-        sym = BAGUA_SYMBOLS.get(h,"")
-        seg = f"{role}{h}（{sym}），属{ele}为{pol}，{vir}"
-        parts.append(seg)
-    lead = "；".join(parts) + "。"
+    def sym(h: str) -> str:
+        return BAGUA_SYMBOLS.get(h, "")
 
-    # 2) 关系白话解释 + 主风格白话
-    rel1 = _rel(vw(zh,"element"), vw(sh,"element")) if zh and sh else ""
-    rel2 = _rel(vw(bh,"element"), vw(zh,"element")) if bh and zh else ""
-    rel_texts = []
-    if rel1: rel_texts.append(_relation_plain(rel1, "mf"))
-    if rel2: rel_texts.append(_relation_plain(rel2, "bm"))
+    def virtue(h: str) -> str:
+        return (WUXING.get(h) or {}).get("virtue", "")
+
+    def rel_from_to(a: str, b: str):
+        # a -> b 的五行方向（用于 主×辅：写辅→主； 基×主：写基→主）
+        A, B = wx(a), wx(b)
+        if not A or not B:
+            return "", ""
+        if SHENG.get(A) == B:
+            return f"{A}生{B}", "相生"
+        if KE.get(A) == B:
+            return f"{A}克{B}", "相克"
+        if A == B:
+            return f"{A}同{B}", "比和"
+        return f"{A}并{B}", "相并"
+
+    # 关系（按对主方向）
+    mf_pair, mf_rel = rel_from_to(sh, zh)   # 辅 → 主
+    bm_pair, bm_rel = rel_from_to(bh, zh)   # 基 → 主
+
+    mf_note = {
+        "相生": "同频协同，执行干脆",
+        "相克": "风格有张力，推进需更多协调",
+        "比和": "同频协同，执行干脆",
+        "相并": "关注点不同，各擅其长",
+    }.get(mf_rel, "")
+
+    bm_note = {
+        "相生": "根基助推，底盘给力",
+        "相克": "旧经验牵扯，当下取舍要稳",
+        "比和": "内外一致，表达与行动不打架",
+        "相并": "资源与目标各有侧重",
+    }.get(bm_rel, "")
+
+    lines = []
+    title = " + ".join([h for h in [zh, sh, bh] if h])
+    lines.append(f"🔮 卦象组合：{title}")
+    if zh: lines.append(f"主{zh}（{wx(zh)}·{sym(zh)}）：{virtue(zh)}")
+    if sh: lines.append(f"辅{sh}（{wx(sh)}·{sym(sh)}）：{virtue(sh)}")
+    if bh: lines.append(f"基{bh}（{wx(bh)}·{sym(bh)}）：{virtue(bh)}")
+    if mf_rel: lines.append(f"主与辅（{mf_pair}）{mf_rel}：{mf_note}")
+    if bm_rel: lines.append(f"基与主（{bm_pair}）{bm_rel}：{bm_note}")
+
+    # 收束句
     style = _style_by_main_plain(zh) if zh else "整体风格平衡"
+    def kw(h: str):
+        s = HEX_SUMMARY.get(h, "")
+        if not s:
+            return ("", "")
+        parts = s.split("·")
+        return (parts[1] if len(parts) > 1 else parts[0], parts[0])
+    left_kw, _ = kw(zh)
+    right_kw, _ = kw(sh)
+    left_kw = left_kw or "主导力"
+    right_kw = right_kw or "亲和力"
+    soft = "外刚内柔" if (mf_rel in ("相生","比和") and bm_rel in ("相生","比和")) else "张弛有度"
+    lines.append(f"三者结合，形成{soft}的特质：既有{left_kw}，又具{right_kw}。" + (f"{style}。" if style else ""))
 
-    tail = " ".join(rel_texts + [style])
+    return "\n".join(lines)
 
-    out = f"三象相合：{lead}{tail}。"
-    return _dedupe_smart(out)
-
-# ---- 状态 & 建议（更人话、更场景） ----
 def _human_status_sentence(s: set, domain: str) -> str:
     lines = []
     if domain == "事业":
@@ -265,6 +329,25 @@ def _imperative_suggestion(detail: str, hexes: List[str], domain: str) -> str:
     add = "；".join(tips[:3])
     return (add + "。") if add else ""
 
+
+def _imperative_suggestion_points(hexes: List[str], domain: str) -> List[str]:
+    s = set([h for h in hexes if h])
+    tips = []
+    if domain == "事业":
+        if "乾" in s or "震" in s: tips.append("先把最重要的一件事定下来，今天推进一小步")
+        if "离" in s: tips.append("当面讲清理由，再落到具体做法")
+        if "兑" in s or "巽" in s: tips.append("找关键人聊一聊，先听对方的，再说自己的")
+        if "坤" in s or "艮" in s: tips.append("把范围和时间说清楚，别一口吃成胖子")
+        if "坎" in s: tips.append("做事前先核对信息，准备一个备选方案")
+    else:
+        if "兑" in s: tips.append("用平常语气聊心里的事，不用绕弯子")
+        if "坤" in s: tips.append("答应的事尽量按时做到，让对方有底")
+        if "离" in s: tips.append("把界限说清楚，让对方知道你的想法")
+        if "震" in s or "乾" in s: tips.append("在重要时刻主动一点")
+        if "坎" in s: tips.append("少靠猜，多确认")
+        if "艮" in s: tips.append("给彼此一些独处时间")
+    return tips[:3]
+
 # ---- 三分象合句 & 专业提示 ----
 def _combine_sentence(desc: str, interp: str) -> str:
     if not desc and not interp: return ""
@@ -273,6 +356,7 @@ def _combine_sentence(desc: str, interp: str) -> str:
     interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容)[，、： ]*", "", interp)
     s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
     s = re.sub(r"[；;]+", "；", s)
+    s = re.sub(r"^\s*[，,。；;：:]+", "", s)  # 清理句首多余标点
     s = re.sub(r"，，+", "，", s)
     return _dedupe_smart(s)
 
@@ -287,6 +371,11 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
         inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
         hexname = (o.get("卦象") or "").strip()
+        # 卦名末尾清洗：去掉句号/点号与“卦”字
+        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
+        o["卦象"] = hexname
+        # 卦名末尾清洗：去掉句号/点号与“卦”字（如“乾。卦”→“乾”）
+        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
         pro = ""
         if hexname in HEX_SUMMARY:
             # 轻量专业提示：如【乾·主导】
@@ -294,7 +383,7 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
             pro = f"【{hexname}·{kw}】"
         if pro and merged:
             merged = f"{pro} {merged}"
-        o["说明"] = desc.strip().rstrip("；;。")
+        o["说明"] = ""  # 合并进“解读”后清空，避免 UI 重复
         o["解读"] = merged.strip()
         o["性格倾向"] = ""
         new_ta[key] = o
@@ -303,6 +392,21 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
             new_ta[k] = ta[k]
     return traits, new_ta
 
+
+def _to_points(s: str, max_items: int = 4) -> List[str]:
+    """Split a sentence by Chinese semicolons/commas into 2-4 concise bullet points."""
+    if not s: return []
+    s = _neutralize(s)
+    s = re.sub(r"[；;]+", "；", s.strip("；。 \n\t"))
+    parts = [p.strip("；，。 \n\t") for p in s.split("；") if p.strip()]
+    if len(parts) <= 1:
+        parts = [p.strip("；，。 \n\t") for p in re.split(r"[，,]", s) if p.strip()]
+    seen, uniq = set(), []
+    for p in parts:
+        if p in seen: continue
+        seen.add(p); uniq.append(p)
+        if len(uniq) >= max_items: break
+    return uniq
 def _merge_status_and_detail(status: str, detail: str) -> str:
     detail_first = detail.split("。")[0].strip() if detail else ""
     detail_first = _neutralize(_strip_domain_lead(detail_first))
@@ -347,9 +451,14 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
     }
     meta["domains_status"] = merged_status
+    meta["domains_status_list"] = {k:_to_points(v) for k,v in merged_status.items()}
     meta["domains_suggestion"] = {
         "事业": _imperative_suggestion(dd.get("金钱与事业",""), hexes, "事业"),
         "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
+    }
+    meta["domains_suggestion_list"] = {
+        "事业": _imperative_suggestion_points(hexes, "事业"),
+        "感情": _imperative_suggestion_points(hexes, "感情")
     }
 
     def _clean(s):
@@ -371,6 +480,20 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         if isinstance(x, list):
             return [_deep_clean(v) for v in x]
         return _clean(x)
+
+    # face_parts 去重：若“解读”包含“特征”，去掉重复；统一标点
+    fps = meta.get("face_parts") or {}
+    if isinstance(fps, dict):
+        for k, v in list(fps.items()):
+            if not isinstance(v, dict): continue
+            feat = (v.get("特征") or "").strip().strip("。；;，, ")
+            expl = (v.get("解读") or "").strip()
+            if feat and expl and feat in expl:
+                import re as _re
+                expl = _re.sub(_re.escape(feat)+r"[，,；;]?", "", expl)
+            v["特征"] = feat
+            v["解读"] = re.sub(r"[；;]+", "；", expl).strip("；。 ")
+    meta["face_parts"] = fps
 
     out["meta"] = _deep_clean(meta)
     return out
