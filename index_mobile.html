@@ -1,242 +1,127 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>Selfy AI — 易经观相（移动版）</title>
-  <script>window.API_BASE = location.origin || "http://127.0.0.1:10000";</script>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Selfy AI（移动版）</title>
   <style>
-    body{background:radial-gradient(900px 540px at 50% -180px,#f8fafc 0%,#f1f5f9 60%,#e5e7eb 100%);}
-    .card{background:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.06);padding:16px;}
-    .pill{display:inline-flex;padding:.25rem .6rem;border-radius:999px;font-size:12px;background:#f5f3ff;color:#4f46e5;}
-    .h2{font-weight:600;font-size:16px;}
-    .stickybar{position:sticky;top:0;z-index:40;backdrop-filter:blur(6px);background:rgba(255,255,255,.85);}
-    .hidden-block{max-height:6.5rem;overflow:hidden;}
-  
-    #overviewLead, #bizInsight, #loveInsight, #faceParts {
-      white-space: pre-line;
-    }
-</style>
+    :root { --bg:#0b0b0f; --card:#12121a; --muted:#8a8fa3; --text:#e9ebf1; --brand:#7aa2ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:14px 16px; position:sticky; top:0; background:linear-gradient(180deg,#0b0b0f,rgba(11,11,15,0.6)); backdrop-filter: blur(6px); border-bottom:1px solid rgba(255,255,255,0.06); z-index:10; }
+    h1 { font-size:18px; margin:0; letter-spacing: .5px; }
+    main { padding:14px 16px 32px; max-width:720px; margin:0 auto; }
+    .uploader { display:flex; gap:10px; align-items:center; margin:10px 0 18px; }
+    input[type=file] { display:none }
+    .btn { background:#1a1b25; color:#e9ebf1; padding:10px 14px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); font-size:14px; }
+    .btn:active { transform: scale(.98) }
+    .card { background:var(--card); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:14px; margin:12px 0; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+    .title { font-weight:700; margin-bottom:8px; font-size:15px; }
+    .muted { color: var(--muted); font-size:13px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .kv { display:flex; gap:8px; font-size:14px; line-height:1.5; }
+    .kv b { width:64px; color:#aeb6d9 }
+    .bullets { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .pill { background:#161722; border:1px solid rgba(255,255,255,0.08); padding:6px 8px; border-radius:999px; font-size:12px; color:#c9d1ff }
+    .hr { height:1px; background:rgba(255,255,255,0.06); margin:10px -14px; }
+    .loading { opacity:.7 }
+    img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid rgba(255,255,255,0.08); }
+  </style>
 </head>
-<body class="text-[15px] text-gray-900">
-  <div class="max-w-md mx-auto p-4 space-y-4">
-    <header class="flex items-center justify-between">
-      <div>
-        <div class="text-xl font-bold tracking-tight">Selfy AI</div>
-        <div class="text-xs text-gray-500 mt-0.5">移动版 · 姿态 / 神情 / 面相</div>
-      </div>
-      <div class="text-xs text-gray-500"><a id="docs" class="underline" target="_blank">/docs</a></div>
-    </header>
+<body>
+  <header>
+    <h1>Selfy AI（移动版）</h1>
+  </header>
+  <main>
+    <div class="uploader">
+      <label class="btn" for="file">选择图片</label>
+      <input id="file" type="file" accept="image/*" />
+      <button id="shot" class="btn">拍照</button>
+    </div>
+    <img id="preview" class="preview" style="display:none"/>
 
-    <section class="card">
-      <div id="drop" class="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center hover:border-indigo-400 transition cursor-pointer bg-gray-50">
-        <div class="text-gray-600 text-sm">点此选择图片，或拖拽到这里<br><span class="text-xs text-gray-400">JPG/PNG ≤ 15MB</span></div>
-        <input id="file" type="file" accept="image/*" class="hidden" />
-      </div>
-      <button id="btnUpload" class="w-full mt-4 px-4 py-3 rounded-xl bg-indigo-600 text-white font-medium shadow hover:shadow-md disabled:opacity-50">开始分析</button>
-      <div class="mt-2 text-xs text-gray-500">* 仅用于本次分析，不做存储。</div>
-      <div id="error" class="mt-2 hidden text-sm text-red-600"></div>
-      <div id="progress" class="mt-2 hidden text-sm text-gray-600">正在分析……</div>
-      <div id="previewWrap" class="mt-3 hidden">
-        <img id="preview" class="max-h-60 rounded-xl object-contain border mx-auto" />
-      </div>
-    </section>
+    <div id="out"></div>
+  </main>
 
-    <section id="resultSec" class="space-y-4 hidden">
-      <div class="card stickybar">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <div id="archetypePill" class="pill">人格画像</div>
-            <div class="flex items-center gap-2 text-xs text-gray-500">
-              <span>可信度</span>
-              <div class="w-28 bg-gray-200 rounded-full h-2 overflow-hidden">
-                <div id="confBar" class="bg-indigo-600 h-2 w-0"></div>
-              </div>
-              <span id="confText"></span>
-            </div>
-          </div>
-          <button id="copyBtn" class="text-xs px-3 py-1.5 border rounded-lg hover:bg-gray-50">复制全文</button>
-        </div>
-      </div>
+  <script>
+  const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
 
-      <div class="space-y-4">
-        <div class="card">
-          <div class="h2 mb-1" id="titlePosture">🧍 姿态</div>
-          <div id="postureHex" class="text-sm text-gray-700"></div>
-          <div id="postureInterp" class="text-sm text-gray-700 mt-1"></div>
-        </div>
+  const fileInput = document.getElementById('file');
+  const shotBtn = document.getElementById('shot');
+  const out = document.getElementById('out');
+  const preview = document.getElementById('preview');
 
-        <div class="card">
-          <div class="h2 mb-1" id="titleExpr">🙂 神情</div>
-          <div id="exprHex" class="text-sm text-gray-700"></div>
-          <div id="exprInterp" class="text-sm text-gray-700 mt-1"></div>
-        </div>
+  shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
+  document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
 
-        <div class="card">
-          <div class="h2 mb-1" id="titleFace">👤 面相</div>
-          <div id="faceHex" class="text-sm text-gray-700"></div>
-          <div id="faceInterp" class="text-sm text-gray-700 mt-1"></div>
-          <div class="mt-2">
-            <div class="text-xs text-gray-500 mb-1">五官细节</div>
-            <div id="faceParts" class="text-sm text-gray-700 whitespace-pre-wrap hidden-block"></div>
-            <button id="toggleParts" class="mt-2 text-xs text-indigo-600">展开更多</button>
-          </div>
-        </div>
-      </div>
+  fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    preview.src = url; preview.style.display = 'block';
+    out.innerHTML = '<div class="card loading">分析中…</div>';
 
-      <div class="card">
-        <div class="h2 mb-1" id="overviewTitle">🔮 卦象组合</div>
-        <div id="overviewLead" class="text-sm text-gray-800 mb-1"></div>
-      </div>
-
-      <div class="card">
-        <div class="h2 mb-1">💼 事业</div>
-        <div class="text-xs text-gray-500 mb-1">近期状态：</div>
-        <div id="bizInsight" class="text-sm text-gray-700 mb-2"></div>
-        <div class="text-xs text-gray-500 mb-1">近期建议：</div>
-        <div id="bizBody" class="text-sm text-gray-800 whitespace-pre-wrap"></div>
-      </div>
-
-      <div class="card">
-        <div class="h2 mb-1">💗 感情</div>
-        <div class="text-xs text-gray-500 mb-1">近期状态：</div>
-        <div id="loveInsight" class="text-sm text-gray-700 mb-2"></div>
-        <div class="text-xs text-gray-500 mb-1">近期建议：</div>
-        <div id="loveBody" class="text-sm text-gray-800 whitespace-pre-wrap"></div>
-      </div>
-    </section>
-
-    <footer class="text-xs text-gray-500 text-center pb-6">
-      <span>后端：<code id="apiBase"></code></span> · <a class="underline" target="_blank" id="docsLink">/docs</a>
-    </footer>
-  </div>
-
-<script>
-const $=(id)=>document.getElementById(id);
-$("apiBase").textContent=window.API_BASE; $("docs").href=window.API_BASE+"/docs"; $("docsLink").href=window.API_BASE+"/docs";
-
-const BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
-
-const drop=$("drop");
-drop.addEventListener("click",()=>$("file").click());
-drop.addEventListener("dragover",e=>{e.preventDefault(); drop.classList.add("border-indigo-400","bg-indigo-50/30");});
-drop.addEventListener("dragleave",e=>{drop.classList.remove("border-indigo-400","bg-indigo-50/30");});
-drop.addEventListener("drop",e=>{e.preventDefault(); drop.classList.remove("border-indigo-400","bg-indigo-50/30"); const f=e.dataTransfer.files?.[0]; if(f) setFile(f);});
-$("file").addEventListener("change",e=>{const f=e.target.files?.[0]; if(f) setFile(f);});
-function setFile(f){const url=URL.createObjectURL(f); $("preview").src=url; $("previewWrap").classList.remove("hidden"); window._file=f;}
-
-$("btnUpload").addEventListener("click", analyze);
-
-$("copyBtn").addEventListener("click", async ()=>{
-  try{
-    const blocks = [];
-    const get = (id)=> (($(id)?.textContent||"").trim());
-
-    blocks.push("Selfy AI（移动版）");
-    blocks.push("人格画像："+ get("archetypePill") + "｜可信度 " + get("confText"));
-
-    blocks.push("🧍 姿态");
-    blocks.push(get("postureHex"));
-    blocks.push(get("postureInterp"));
-
-    blocks.push("🙂 神情");
-    blocks.push(get("exprHex"));
-    blocks.push(get("exprInterp"));
-
-    blocks.push("👤 面相");
-    blocks.push(get("faceHex"));
-    blocks.push(get("faceInterp"));
-    const fp = get("faceParts"); if(fp) blocks.push("五官细节：\n"+fp);
-
-    blocks.push(get("overviewTitle"));
-    blocks.push(get("overviewLead"));
-
-    blocks.push("💼 事业｜近期状态");
-    blocks.push(get("bizInsight"));
-    blocks.push("💼 事业｜近期建议");
-    blocks.push(get("bizBody"));
-
-    blocks.push("💗 感情｜近期状态");
-    blocks.push(get("loveInsight"));
-    blocks.push("💗 感情｜近期建议");
-    blocks.push(get("loveBody"));
-
-    const text = blocks.filter(Boolean).join("\n");
-    await navigator.clipboard.writeText(text);
-    const b=$("copyBtn"); const t=b.textContent; b.textContent="已复制"; setTimeout(()=>b.textContent=t,1200);
-  }catch(e){}
-});
-
-$("toggleParts").addEventListener("click", ()=>{
-  const el=$("faceParts"); const btn=$("toggleParts");
-  if(el.classList.contains("hidden-block")){el.classList.remove("hidden-block"); btn.textContent="收起";}
-  else{el.classList.add("hidden-block"); btn.textContent="展开更多";}
-});
-
-async function analyze(){
-  const f=window._file; if(!f){showErr("请先选择图片"); return;}
-  showErr(null); $("progress").classList.remove("hidden"); $("btnUpload").disabled=true;
-  const fd=new FormData(); fd.append("file", f, f.name);
-  try{
-    const rsp=await fetch(window.API_BASE+"/upload",{method:"POST", body:fd});
-    const d=await rsp.json(); if(!rsp.ok) throw new Error(d?.error||"接口错误"); render(d);
-  }catch(e){ showErr(e.message||"请求失败"); }
-  finally{ $("progress").classList.add("hidden"); $("btnUpload").disabled=false; }
-}
-function showErr(msg){ const el=$("error"); if(!msg){el.classList.add("hidden"); el.textContent=""; return;} el.textContent=msg; el.classList.remove("hidden"); }
-
-function neutralize(s){
-  if(!s) return s;
-  return s
-    .replace(/(他|她|TA|对方|其)(的)?/g, "")
-    .replace(/(在(金钱与事业|配偶与感情|事业|感情)(方面|中|里)?|目前|近期|当下)[，、： ]*/g, "")
-    .replace(/(可能|或许|也许)[，、 ]*/g, "")
-    .replace(/[，,]{2,}/g, "，")
-    .replace(/[；;]{2,}/g, "；")
-    .trim();
-}
-
-function fmtSection(o){
-  const desc = (o?.["说明"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
-  const hex = (o?.["卦象"]||"").trim().replace(/[。\.\s]+$/,"").replace(/卦$/,"");
-  const interp = (o?.["解读"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
-  const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
-  const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
-  const body = [desc, interp].filter(Boolean).join("，");
-  const line3 = body ? ("解读："+body) : "";
-  return {line2, line3};
-}
-
-function render(d){
-  $("resultSec").classList.remove("hidden");
-
-  const tag=(d?.meta?.headline?.tag||d?.archetype||"人格画像");
-  const confVal=Number.isFinite(d?.meta?.headline?.confidence)?d.meta.headline.confidence:(d.confidence||0);
-  $("archetypePill").textContent=tag; const conf=Math.round(confVal*100); $("confBar").style.width=Math.min(conf,100)+"%"; $("confText").textContent=conf+"%";
-
-  $("titlePosture").textContent="🧍 姿态"; $("titleExpr").textContent="🙂 神情"; $("titleFace").textContent="👤 面相";
-
-  const ta=d?.meta?.triple_analysis||{};
-  const s1=fmtSection(ta["姿态"]); $("postureHex").textContent=s1.line2; $("postureInterp").textContent=s1.line3;
-  const s2=fmtSection(ta["神情"]); $("exprHex").textContent=s2.line2; $("exprInterp").textContent=s2.line3;
-  const s3=fmtSection(ta["面容"]); $("faceHex").textContent=s3.line2; $("faceInterp").textContent=s3.line3;
-
-  const fp=d?.meta?.face_parts||{}; const lines=[];
-  [["眉","眉"],["眼","眼"],["鼻","鼻"],["嘴","嘴"],["颧/下巴","颧/下巴"]].forEach(([k,lab])=>{
-    const it=fp[k]; if(it){ const feat=(it["特征"]||"").trim(); const inter=(it["解读"]||"").trim(); lines.push(lab+"："+feat+(inter?("；"+inter):"")); }
+    const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const data = await r.json();
+      render(data);
+    } catch (err) {
+      out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
+    }
   });
-  $("faceParts").textContent=lines.join("\n");
 
-  const overviewOne = (d?.meta?.overview_card?.summary) || d.summary || "";
-  $("overviewTitle").textContent = (d?.meta?.overview_card?.title) || "🔮 卦象组合";
-  $("overviewLead").textContent  = overviewOne;
+  function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
 
-  $("bizInsight").textContent  = neutralize(d?.meta?.domains_status?.["事业"]  || "");
-  $("loveInsight").textContent = neutralize(d?.meta?.domains_status?.["感情"]  || "");
-  $("bizBody").textContent     = neutralize((d?.meta?.domains_suggestion?.["事业"]) || (d?.meta?.domains_detail?.["金钱与事业"]) || "—");
-  $("loveBody").textContent    = neutralize((d?.meta?.domains_suggestion?.["感情"]) || (d?.meta?.domains_detail?.["配偶与感情"]) || "—");
-}
-</script>
+  function render(d){
+    const ta = d.meta?.triple_analysis || {};
+    const cb = d.meta?.confidence_breakdown || {};
+
+    const headline = `
+      <div class="card">
+        <div class="title">Selfy AI</div>
+        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
+        <div class="muted">可信度 ${pct(d.confidence||0)}% · 拆解：
+          图像清晰度 ${pct(cb['图像清晰度']||0)}%｜卦象一致性 ${pct(cb['卦象一致性']||0)}%｜特征显著性 ${pct(cb['特征显著性']||0)}%
+        </div>
+      </div>`;
+
+    function triCard(name, key){
+      const o = ta[key] || {}; const hex = o['卦象'] || ''; const sym = SYMBOLS[hex]||'';
+      const lines = [
+        `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
+        `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
+      ];
+      if (o['经文提示']) lines.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
+      return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
+    }
+
+    const tri = `
+      <div class="grid">
+        ${triCard('🧍 姿态','姿态')}
+        ${triCard('🙂 神情','神情')}
+        ${triCard('👤 面相','面容')}
+      </div>`;
+
+    const combo = (()=>{
+      const oc = d.meta?.overview_card || {}; const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
+      return `<div class="card"><div class="title">${escapeHtml(oc.title||'三才之道')}</div><div style="font-size:14px;line-height:1.6">${text}</div></div>`;
+    })();
+
+    const statusCard = (title, items)=>{
+      if (!items || !items.length) return '';
+      return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
+    }
+
+    const doms = d.meta?.domains_status_list || {};
+
+    out.innerHTML = headline + tri + combo +
+                    statusCard('💼 事业｜近期要点', doms['事业']) +
+                    statusCard('💗 感情｜近期要点', doms['感情']);
+  }
+
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  </script>
 </body>
 </html>
