@@ -16,43 +16,6 @@ from openai import OpenAI
 RUNTIME_VERSION = "3.8.3"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()
 SCHEMA_ID = "selfy.v3"
-
-def rel_phrase(main_elem: str, sub_elem: str) -> Tuple[str, str]:
-    """生成主 × 辅 / 基 卦象五行关系的描述"""
-    wu_xing_map = {
-        "乾": "金", "兑": "金", "离": "火", "震": "木",
-        "巽": "木", "坎": "水", "艮": "土", "坤": "土"
-    }
-
-    relation_map = {
-        ("金", "火"): ("火克金", "制衡（风格有张力，推进需更多协调）"),
-        ("火", "金"): ("火克金", "制衡（风格有张力，推进需更多协调）"),
-        ("金", "木"): ("金克木", "主导性强（执行力强但需关注沟通）"),
-        ("木", "金"): ("金克木", "主导性强（执行力强但需关注沟通）"),
-        ("水", "火"): ("水克火", "节制（理性压制感性，易内耗）"),
-        ("火", "水"): ("水克火", "节制（理性压制感性，易内耗）"),
-        ("火", "土"): ("火生土", "推进（热情助推落地）"),
-        ("土", "火"): ("火生土", "推进（热情助推落地）"),
-        ("土", "金"): ("土生金", "助力（配合顺畅，优势互补）"),
-        ("金", "土"): ("土生金", "助力（配合顺畅，优势互补）"),
-        ("金", "金"): ("金同金", "比和（同频协同，执行干脆）"),
-        ("火", "火"): ("火同火", "共鸣（热情高涨，推动力强）"),
-        ("土", "土"): ("土同土", "稳固（基础扎实，推进稳定）"),
-        ("水", "金"): ("金生水", "滋养（理性推动情绪）"),
-        ("木", "火"): ("木生火", "催化（激发热情与动力）"),
-        ("木", "木"): ("木同木", "并进（成长同步，协调性强）"),
-        ("水", "水"): ("水同水", "流动（思维灵活，适应性强）"),
-    }
-
-    main_elem_wx = wu_xing_map.get(main_elem, "未知")
-    sub_elem_wx = wu_xing_map.get(sub_elem, "未知")
-    relation_key = (main_elem_wx, sub_elem_wx)
-    relation, explanation = relation_map.get(relation_key, ("未知关系", "（风格待定）"))
-
-    phrase = f"主{main_elem}（{main_elem_wx}）×辅{sub_elem}（{sub_elem_wx}）：{relation} → {explanation}"
-    return phrase, explanation
-
-
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
 
 logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO,
