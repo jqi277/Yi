@@ -1,11 +1,11 @@
-# fastapi_app.py  (runtime v3.9.0, analysis logic v3.9.0·易经推导版)
-# 3.9.0：易经“推导版”
-# - 三合象：主/辅/基 + 五行生克/同气/相并 → 只做“人物画像”，不夹带建议
-# - 事业/感情：按卦象知识库推导“近期状态/近期建议”；主=风格，辅=外部，人=基础
-# - 建立卦象知识库（每卦：人格关键词、事业状态/建议、感情状态/建议、五行）
-# - 去模板化：所有文本从卦义+生克推导生成，而非通用口号
-import os, base64, json, logging, traceback, re
-from typing import Dict, Any, List, Tuple
+# fastapi_app.py  (runtime v3.8.3, analysis logic v3.7.2)
+# 3.8.3: “易经可解释版”
+# - 卦象组合：主/辅/基专业开头 + 关系与主风格的“意象→白话解释”两步落地
+# - 三分象：开头轻量专业提示（如【乾·主导】），后接白话解释；强去重复
+# - 事业/感情：状态与建议避免口号/堆词，改为“可感知场景 + 明确动作”的句子
+# - 文本后处理：_dedupe_smart 保句读，清理“在…方面/…上”残影与代词
+import os, base64, json, logging, traceback, re, math
+from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse, Response
@@ -13,8 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.9.0"
-ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "390").strip()
+RUNTIME_VERSION = "3.8.3"
+ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
 
@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("selfy-ai")
 
-app = FastAPI(title="Selfy AI - YiJing Analysis API (推导版)", version=RUNTIME_VERSION)
+app = FastAPI(title="Selfy AI - YiJing Analysis API", version=RUNTIME_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 try:
@@ -30,7 +30,6 @@ try:
 except Exception as e:
     logger.error("OpenAI client init failed: %s", e); client=None
 
-# ---- 常量与工具 ----
 BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}
 
 def _to_data_url(content: bytes, content_type: str) -> str:
@@ -63,24 +62,28 @@ def _json_hint() -> str:
             "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
             "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
             "\"meta\":{\"triple_analysis\":{\"姿态\":{\"说明\":\"…\",\"卦象\":\"艮\",\"解读\":\"…\",\"性格倾向\":\"…\"},\"神情\":{…},\"面容\":{…},\"组合意境\":\"…\",\"总结\":\"…\"},"
-            "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…\"},\"眼\":{…},\"鼻\":{…},\"嘴\":{…},\"颧/下巴\":{…}}}}")
+            "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…\"},\"眼\":{…},\"鼻\":{…},\"嘴\":{…},\"颧/下巴\":{…}},"
+            "\"domains_detail\":{\"金钱与事业\":\"…(60–90字)\",\"配偶与感情\":\"…(60–90字)\"}}}")
 
-def _prompt_for_image_v390():
+def _prompt_for_image_v372():
     sys = (
-      "你是 Selfy AI 的易经观相助手（v3.9.0 推导基底）。"
+      "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
       "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分必须包含："
       "1) 说明：1句，客观描绘外观/动作/气质；"
       "2) 卦象：仅写一个卦名（艮/离/兑/乾/坤/震/巽/坎）；"
       "3) 解读：1–2句，基于卦象与观察做含义阐释；"
       "4) 性格倾向：1–2句，独立成段，不要与“解读”重复措辞。"
-      "然后给出简要总结、人设标签，并在 meta.face_parts 中补充五官细节（眉/眼/鼻/嘴/颧/下巴任五项）。"
-      "domains 仅从 ['金钱与事业','配偶与感情'] 选择，meta.domains_detail 中可给出各 60–90 字文本（后端会再做推导融合）。"
+      "然后给出："
+      "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文 90–150 字。"
+      "6) 总结性格印象：20–40字，避免模板化；"
+      "7) 人格标签 archetype：2–5字中文，如“外冷内热/主导型/谨慎型”。"
+      "面相需拆成五官：在 meta.face_parts 中，给【眉/眼/鼻/嘴/颧/下巴】（任选5项覆盖）各写“特征（外观）”与“解读（基于易经）”。"
+      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中分别写 60–90 字建议文本。"
       "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。"
     )
-    user = "请按规范分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
+    user = "请按 3.7.2 风格分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
     return [{"role":"system","content":sys},{"role":"user","content":user}]
 
-# ---- 文本清理 ----
 DOMAIN_LEADS = r"(在(金钱与事业|配偶与感情|事业|感情)(方面|中|里)?|目前|近期|当下)"
 _STOPWORDS = r"(姿态|神情|面容|整体|气质|形象|给人以|一种|以及|并且|而且|更显|显得|展现出|流露出|透露出)"
 
@@ -125,7 +128,7 @@ def _dedupe_smart(s: str) -> str:
             if ck and ck not in seen_keys:
                 seen_keys.add(ck); kept.append(t)
         clean_sentences.append("，".join(kept))
-    return "。".join(clean_sentences) + ("。" if clean_sentences else "")
+    return "。".join(clean_sentences) + "。"
 
 def _strip_domain_lead(s: str) -> str:
     if not isinstance(s, str): return s
@@ -133,8 +136,8 @@ def _strip_domain_lead(s: str) -> str:
     s = re.sub(r"^上[，、： ]*", "", s)  # 裁掉“上，”之类残留
     return s
 
-# ---- 易经知识库 ----
-HEX_SUMMARY = {  # 用于轻量提示
+# --- 易经语义表 ---
+HEX_SUMMARY = {
     "乾":"自信·主导·果断",
     "坤":"包容·稳定·承载",
     "震":"行动·突破·起势",
@@ -144,7 +147,6 @@ HEX_SUMMARY = {  # 用于轻量提示
     "艮":"止定·边界·稳守",
     "兑":"亲和·交流·悦人"
 }
-
 WUXING = {
     "乾":{"element":"金","polarity":"阳","virtue":"刚健自强、御领局面"},
     "兑":{"element":"金","polarity":"阴","virtue":"和悦亲和、以乐感人"},
@@ -155,55 +157,9 @@ WUXING = {
     "艮":{"element":"土","polarity":"阳","virtue":"止定有度、守正立界"},
     "坤":{"element":"土","polarity":"阴","virtue":"厚德载物、内敛承载"}
 }
-
 SHENG = {"木":"火","火":"土","土":"金","金":"水","水":"木"}
 KE    = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
 
-# 每卦在事业/感情中的“状态/建议”（基于象辞意涵，简化为可落地短句）
-HEX_DOMAIN_KB: Dict[str, Dict[str, Dict[str,str]]] = {
-    "乾":{
-        "persona":"刚健自强、主导框架",
-        "career":{"state":"行事果断，目标导向，善于定方向与标准","advice":"取象“利见大人”：向上连线、借势资源；分解目标，节奏稳健推进"},
-        "love":{"state":"表达直接，重承诺与保护感","advice":"取象“天行健”：以诚相待，先定边界与节奏，再深入关系"}
-    },
-    "坤":{
-        "persona":"厚德载物、稳定承载",
-        "career":{"state":"稳扎稳打，重流程与配合，能落地执行","advice":"取象“厚德载物”：按部就班，先稳后广；把规则落成明确的步骤"},
-        "love":{"state":"包容耐心，重陪伴与信任","advice":"以“地势坤”为范：多倾听少判断，承接对方需求，稳定关系底盘"}
-    },
-    "震":{
-        "persona":"起势突破、敢为先",
-        "career":{"state":"行动力强，善于开启项目并带动节奏","advice":"取象“雷动万物”：快速试错，小步快跑；以行动拉动资源聚集"},
-        "love":{"state":"关键处能主动靠近，带动互动氛围","advice":"以“动”化“静”：制造正向互动，用真实行动表达在意"}
-    },
-    "巽":{
-        "persona":"渗透协调、柔中有据",
-        "career":{"state":"善协同与说服，能把人拉到同一轨道","advice":"取象“入而不争”：先融后领，厘清利害，让共识自然形成"},
-        "love":{"state":"体贴分寸感强，擅化解小矛盾","advice":"以“和”为主：多确认、多复述，降低误解，稳中加深"}
-    },
-    "离":{
-        "persona":"明晰表达、洞察分明",
-        "career":{"state":"信息透明，逻辑清楚，擅总结与呈现","advice":"取象“日中见明”：先讲清缘由与标准，再进入执行与验收"},
-        "love":{"state":"沟通直白，重情绪表达与仪式感","advice":"保持“明而不灼”：坦诚但不逼迫，给对方消化空间"}
-    },
-    "坎":{
-        "persona":"居安识危、先证后行",
-        "career":{"state":"审慎周密，善风险识别与预案","advice":"取象“习坎为险”：先核对关键数据与假设，留出A/B方案"},
-        "love":{"state":"在意安全感，情绪起伏需被看见","advice":"以“实证”换“安心”：少猜多问，建立稳定的确认机制"}
-    },
-    "艮":{
-        "persona":"止当其时、边界分明",
-        "career":{"state":"能控节奏，守边界，推进有章法","advice":"取象“艮其背”：先定范围与优先级，再逐步扩展"},
-        "love":{"state":"尊重边界，关系推进循序渐进","advice":"稳步靠近：给彼此独处与呼吸感，节奏略慢反更稳"}
-    },
-    "兑":{
-        "persona":"以悦为和、亲和沟通",
-        "career":{"state":"亲和力强，善沟通促成与客户关系","advice":"取象“说以成事”：把利益点讲清，先易后难，促成在共赢"},
-        "love":{"state":"表达感受自然，互动轻松有趣","advice":"以“悦”养“深”：用日常的小确认与关怀，持续加温"}
-    }
-}
-
-# ---- 生克关系 ----
 def _rel(a: str, b: str) -> str:
     if not a or not b: return ""
     if a == b: return "同气相求"
@@ -211,30 +167,30 @@ def _rel(a: str, b: str) -> str:
     if KE.get(a) == b: return "相克"
     return "相并"
 
-# ---- 三合象（纯人物画像） ----
 def _style_by_main_plain(h: str) -> str:
-    if h in ("乾","震"): return "行事节奏偏主动"
-    if h in ("坤","艮"): return "行事节奏偏稳健"
-    if h in ("离",):     return "风格重表达与清晰"
-    if h in ("兑",):     return "风格重关系与亲和"
-    if h in ("巽",):     return "风格重协调与渗透"
-    if h in ("坎",):     return "风格偏谨慎与求证"
-    return "风格平衡"
+    # 主风格 → 白话解释
+    if h in ("乾","震"): return "整体偏主动：看准就先做第一步"
+    if h in ("坤","艮"): return "整体偏稳妥：先把基础打牢，再慢慢放大"
+    if h in ("离",):     return "整体偏清楚表达：先把理由讲明白"
+    if h in ("兑",):     return "整体偏亲和：先把关系处好，事就好办"
+    if h in ("巽",):     return "整体偏协调：先融进去，再带着往前走"
+    if h in ("坎",):     return "整体偏谨慎：先确认信息，再决定"
+    return "整体风格平衡"
 
 def _relation_plain(rel: str, pos: str) -> str:
-    # pos: "mf" 主-辅；"bm" 基-主  —— 全部改为“描述性”，不下指令
-    if pos == "mf":
-        if rel == "相生": return "主辅同向，配合顺畅"
-        if rel == "相克": return "主辅相制，推进时易有拉扯"
-        if rel == "同气相求": return "主辅同频，执行干脆"
-        return "主辅各守一隅，取舍权衡更显重要"
-    else:
-        if rel == "相生": return "根基与目标顺流，底盘给力"
-        if rel == "相克": return "内在经验与目标相拧，心力有分配"
-        if rel == "同气相求": return "内外一致，表达与行动不打架"
-        return "资源取向与目标各有侧重，需要兼容并行"
+    # rel1 主-辅；rel2 基-主
+    if pos == "mf":  # main-fu
+        if rel == "相生": return "主与辅能对上号：想法容易被理解与支持"
+        if rel == "相克": return "主与辅有摩擦：先把期待讲清再推进"
+        if rel == "同气相求": return "主与辅风格一致：效率高，但要留意不同意见"
+        return "主与辅各有侧重：需要你来定次序和分工"
+    else:            # base-main
+        if rel == "相生": return "内在力量在支持主线：遇到变化也不容易乱"
+        if rel == "相克": return "内心与目标有拉扯：先想清原则再出手"
+        if rel == "同气相求": return "内外一致：想法和做法不打架"
+        return "内在与目标各走各的：用简单规则把它们拢在一起"
 
-def _synthesize_combo_portrait(hexes: List[str]) -> str:
+def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
     keys = [h for h in [zh, sh, bh] if h]
     if not keys: return ""
@@ -242,27 +198,74 @@ def _synthesize_combo_portrait(hexes: List[str]) -> str:
     def vw(h, key): 
         return (WUXING.get(h) or {}).get(key, "")
 
-    lead_parts = []
+    # 1) 专业开头（主/辅/基 + 五行/德性）
+    parts = []
     for role, h in (("主", zh), ("辅", sh), ("基", bh)):
         if not h: continue
         ele = vw(h,"element"); pol = vw(h,"polarity"); vir = vw(h,"virtue")
         sym = BAGUA_SYMBOLS.get(h,"")
-        lead_parts.append(f"{role}{h}（{sym}），属{ele}为{pol}，{vir}")
-    lead = "；".join(lead_parts) + "。"
+        seg = f"{role}{h}（{sym}），属{ele}为{pol}，{vir}"
+        parts.append(seg)
+    lead = "；".join(parts) + "。"
 
+    # 2) 关系白话解释 + 主风格白话
     rel1 = _rel(vw(zh,"element"), vw(sh,"element")) if zh and sh else ""
     rel2 = _rel(vw(bh,"element"), vw(zh,"element")) if bh and zh else ""
     rel_texts = []
     if rel1: rel_texts.append(_relation_plain(rel1, "mf"))
     if rel2: rel_texts.append(_relation_plain(rel2, "bm"))
-    style = _style_by_main_plain(zh) if zh else "风格平衡"
+    style = _style_by_main_plain(zh) if zh else "整体风格平衡"
 
-    tail = "；".join([t for t in rel_texts if t])
-    tail = (tail + ("；" if tail else "") + style) if style else tail
+    tail = " ".join(rel_texts + [style])
+
     out = f"三象相合：{lead}{tail}。"
     return _dedupe_smart(out)
 
-# ---- 三分象合句 & 专业提示（保持 v3.8 的优化，但去建议化） ----
+# ---- 状态 & 建议（更人话、更场景） ----
+def _human_status_sentence(s: set, domain: str) -> str:
+    lines = []
+    if domain == "事业":
+        if "乾" in s or "震" in s: lines.append("有计划也肯动手，遇事不拖")
+        if "离" in s: lines.append("说清楚想法，能把原因讲明白")
+        if "兑" in s or "巽" in s: lines.append("会把人拉进来一起做，气氛不紧张")
+        if "坤" in s or "艮" in s: lines.append("先稳住，再决定，事情能落到结果上")
+        if "坎" in s: lines.append("会先查清信息，留个备选方案")
+    else:
+        if "兑" in s: lines.append("聊天自然，愿意表达感受")
+        if "离" in s: lines.append("讲道理也讲分寸")
+        if "坤" in s: lines.append("重承诺，愿意花时间陪伴")
+        if "坎" in s: lines.append("在意安全感，容易多想")
+        if "震" in s or "乾" in s: lines.append("关键时能主动靠近")
+        if "艮" in s: lines.append("尊重彼此边界")
+    return "；".join(lines)
+
+def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
+    s = set([h for h in hexes if h])
+    return {
+        "事业": _human_status_sentence(s, "事业"),
+        "感情": _human_status_sentence(s, "感情"),
+    }
+
+def _imperative_suggestion(detail: str, hexes: List[str], domain: str) -> str:
+    s = set([h for h in hexes if h])
+    tips = []
+    if domain == "事业":
+        if "乾" in s or "震" in s: tips.append("先把最重要的一件事定下来，今天推进一小步")
+        if "离" in s: tips.append("当面讲清理由，再落到具体做法")
+        if "兑" in s or "巽" in s: tips.append("找关键人聊一聊，先听对方的，再说自己的")
+        if "坤" in s or "艮" in s: tips.append("把范围和时间说清楚，别一口吃成胖子")
+        if "坎" in s: tips.append("做事前先核对信息，准备一个备选方案")
+    else:
+        if "兑" in s: tips.append("用平常语气聊心里的事，不用绕弯子")
+        if "坤" in s: tips.append("答应的事尽量按时做到，让对方有底")
+        if "离" in s: tips.append("把界限说清楚，让对方知道你的想法")
+        if "震" in s or "乾" in s: tips.append("在重要时刻主动一点")
+        if "坎" in s: tips.append("少靠猜，多确认")
+        if "艮" in s: tips.append("给彼此一些独处时间")
+    add = "；".join(tips[:3])
+    return (add + "。") if add else ""
+
+# ---- 三分象合句 & 专业提示 ----
 def _combine_sentence(desc: str, interp: str) -> str:
     if not desc and not interp: return ""
     desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
@@ -273,8 +276,9 @@ def _combine_sentence(desc: str, interp: str) -> str:
     s = re.sub(r"，，+", "，", s)
     return _dedupe_smart(s)
 
-def _collect_traits_and_merge(ta: Dict[str,Any]) -> Tuple[List[str], Dict[str,Any]]:
-    traits, new_ta = [], {}
+def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
+    traits = []
+    new_ta = {}
     for key in ["姿态","神情","面容"]:
         o = (ta.get(key) or {}).copy()
         tend = (o.get("性格倾向") or "").strip().rstrip("；;。")
@@ -285,102 +289,21 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> Tuple[List[str], Dict[str,An
         hexname = (o.get("卦象") or "").strip()
         pro = ""
         if hexname in HEX_SUMMARY:
+            # 轻量专业提示：如【乾·主导】
             kw = HEX_SUMMARY[hexname].split("·")[1] if "·" in HEX_SUMMARY[hexname] else HEX_SUMMARY[hexname]
             pro = f"【{hexname}·{kw}】"
         if pro and merged:
             merged = f"{pro} {merged}"
         o["说明"] = desc.strip().rstrip("；;。")
         o["解读"] = merged.strip()
-        o["性格倾向"] = ""  # 三合象的人格倾向只在内部合成
+        o["性格倾向"] = ""
         new_ta[key] = o
     for k in ta.keys():
         if k not in new_ta:
             new_ta[k] = ta[k]
     return traits, new_ta
 
-# ---- 领域推导：状态 & 建议 ----
-def _rel_to_env_phrase(rel: str, domain: str, pos: str) -> str:
-    # pos: "mf" 外部/人际；"bm" 资源/根基
-    if domain == "事业":
-        if pos == "mf":
-            return {"相生":"外部助推，同事/客户更易配合",
-                    "相克":"外部牵扯，协同成本上升",
-                    "同气相求":"外部同频，信息传达更顺",
-                    "相并":"侧重不同，需在目标与资源间取舍"}.get(rel,"")
-        else:
-            return {"相生":"底盘给力，资源与节奏顺流",
-                    "相克":"旧经验牵制，资源与目标有拧",
-                    "同气相求":"内外一致，执行阻力小",
-                    "相并":"资源方向与目标各有侧重"}.get(rel,"")
-    else:  # 感情
-        if pos == "mf":
-            return {"相生":"对方/关系易回应，互动更顺",
-                    "相克":"彼此节奏不一，易误读",
-                    "同气相求":"同频沟通，默契感强",
-                    "相并":"关注点不同，需要更多理解"}.get(rel,"")
-        else:
-            return {"相生":"安全感充沛，关系底色稳定",
-                    "相克":"旧情绪/旧模式牵扯当下",
-                    "同气相求":"价值观一致，承诺易兑现",
-                    "相并":"现实条件与期待不完全重合"}.get(rel,"")
-
-def _domain_status_by_kb(hexes: List[str], domain: str) -> str:
-    zh, sh, bh = (hexes + ["", "", ""])[:3]
-    def e(h): return (WUXING.get(h) or {}).get("element","")
-    s_main = HEX_DOMAIN_KB.get(zh,{}).get("career" if domain=="事业" else "love",{}).get("state","") if zh else ""
-    s_fu   = HEX_DOMAIN_KB.get(sh,{}).get("career" if domain=="事业" else "love",{}).get("state","") if sh else ""
-    s_base = HEX_DOMAIN_KB.get(bh,{}).get("career" if domain=="事业" else "love",{}).get("state","") if bh else ""
-
-    r_mf = _rel(e(zh), e(sh)) if zh and sh else ""
-    r_bm = _rel(e(bh), e(zh)) if bh and zh else ""
-
-    env_phrase = _domain_status_by_kb._cache.setdefault((domain,"mf",r_mf), _rel_to_env_phrase(r_mf, domain, "mf")) if r_mf else ""
-    base_phrase= _domain_status_by_kb._cache.setdefault((domain,"bm",r_bm), _rel_to_env_phrase(r_bm, domain, "bm")) if r_bm else ""
-
-    parts = []
-    if s_main: parts.append(f"主{zh}：{s_main}")
-    if s_fu:   parts.append(f"辅{sh}：{s_fu}")
-    if env_phrase: parts.append(env_phrase)
-    if s_base: parts.append(f"基{bh}：{s_base}")
-    if base_phrase: parts.append(base_phrase)
-
-    text = "；".join([p for p in parts if p])
-    return _dedupe_smart(text)
-_domain_status_by_kb._cache = {}
-
-def _domain_advice_by_kb(hexes: List[str], domain: str) -> str:
-    zh, sh, bh = (hexes + ["", "", ""])[:3]
-    s = []
-    key = "career" if domain=="事业" else "love"
-    if zh: s.append(HEX_DOMAIN_KB.get(zh,{}).get(key,{}).get("advice",""))
-    if sh: s.append(HEX_DOMAIN_KB.get(sh,{}).get(key,{}).get("advice",""))
-    if bh: s.append(HEX_DOMAIN_KB.get(bh,{}).get(key,{}).get("advice",""))
-
-    # 关系修正（允许下指令，因为属于“建议”）
-    def e(h): return (WUXING.get(h) or {}).get("element","")
-    r_mf = _rel(e(zh), e(sh)) if zh and sh else ""
-    r_bm = _rel(e(bh), e(zh)) if bh and zh else ""
-
-    if domain=="事业":
-        if r_mf=="相克": s.append("先把角色与期待讲清，再定推进节奏")
-        if r_mf=="相生": s.append("识别助推点，借力发力")
-        if r_bm=="相克": s.append("区分旧经验与当下目标，避免耗散")
-        if r_bm=="相生": s.append("把成熟做法标准化，形成SOP")
-        if r_mf=="同气相求": s.append("设置“唱反调”环节，避免盲点")
-    else:
-        if r_mf=="相克": s.append("明确界限与节奏，减少误会")
-        if r_mf=="相生": s.append("顺势多创造正向互动")
-        if r_bm=="相克": s.append("与过去和解，避免旧模式影响当下")
-        if r_bm=="相生": s.append("把稳定的好习惯保留下来")
-        if r_mf=="同气相求": s.append("保留空间与新鲜感")
-
-    tips = [ _neutralize(_depronoun(t)).strip("。； ") for t in s if t ]
-    tips = [t for i,t in enumerate(tips) if t and t not in tips[:i]]
-    return _dedupe_smart(("；".join(tips[:3]) + "。") if tips else "")
-
-# ---- 融合输出 ----
 def _merge_status_and_detail(status: str, detail: str) -> str:
-    # v3.9：保留一小句来自模型的描述作为“色彩”，但不覆盖KB推导
     detail_first = detail.split("。")[0].strip() if detail else ""
     detail_first = _neutralize(_strip_domain_lead(detail_first))
     status = _neutralize(_strip_domain_lead(status or ""))
@@ -404,36 +327,29 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     combo_title = " + ".join([h for h in hexes if h])
     meta["combo_title"] = combo_title
 
-    # 三合象：改为“人物画像”
-    overview = _synthesize_combo_portrait(hexes)
-    if not overview:
-        overview = (ta.get("总结") or out.get("summary","")).strip().rstrip("；;")
+    synthesized = _synthesize_combo(hexes, ta, traits)
+    one = (ta.get("总结") or out.get("summary",""))
+    overview = (synthesized or one).strip().rstrip("；;")
     meta["overview_card"] = {"title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
                              "summary": overview}
 
-    # headline
     try:
         out["confidence"] = float(out.get("confidence",0.0))
     except Exception:
         out["confidence"] = 0.0
     arch = (out.get("archetype") or "").strip()
-    out["archetype"] = arch
-    meta["headline"] = {"tag": arch or "人格画像", "confidence": out["confidence"]}
+    meta["headline"] = {"tag": arch, "confidence": out["confidence"]}
 
-    # 领域：状态 & 建议（全部走KB + 生克推导）
-    kb_status = {
-        "事业": _domain_status_by_kb(hexes, "事业"),
-        "感情": _domain_status_by_kb(hexes, "感情"),
-    }
-    dd = (meta.get("domains_detail") or {})  # 仅取色彩
+    dd = meta.get("domains_detail") or {}
+    status = _insight_for_domains(hexes)
     merged_status = {
-        "事业": _merge_status_and_detail(kb_status.get("事业",""), dd.get("金钱与事业","")),
-        "感情": _merge_status_and_detail(kb_status.get("感情",""), dd.get("配偶与感情","")),
+        "事业": _merge_status_and_detail(status.get("事业",""), dd.get("金钱与事业","")),
+        "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
     }
     meta["domains_status"] = merged_status
     meta["domains_suggestion"] = {
-        "事业": _domain_advice_by_kb(hexes, "事业"),
-        "感情": _domain_advice_by_kb(hexes, "感情"),
+        "事业": _imperative_suggestion(dd.get("金钱与事业",""), hexes, "事业"),
+        "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
     }
 
     def _clean(s):
@@ -459,7 +375,6 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     out["meta"] = _deep_clean(meta)
     return out
 
-# ---- HTTP 路由 ----
 @app.get("/health")
 def health(): return {"status":"ok"}
 
@@ -496,7 +411,7 @@ def _call_openai(messages):
     )
 
 def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
-    messages = _prompt_for_image_v390()
+    messages = _prompt_for_image_v372()
     messages[-1]["content"] = [
         {"type":"text","text":messages[-1]["content"]},
         {"type":"image_url","image_url":{"url":data_url}}
