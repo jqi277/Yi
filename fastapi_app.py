@@ -350,48 +350,87 @@ def _imperative_suggestion_points(hexes: List[str], domain: str) -> List[str]:
 
 # ---- 三分象合句 & 专业提示 ----
 def _combine_sentence(desc: str, interp: str) -> str:
-    if not desc and not interp: return ""
-    desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
-    interp = _neutralize(_depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")))
-    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容)[，、： ]*", "", interp)
+    if not desc and not interp:
+        return ""
+    # 基础清洗
+    desc  = _neutralize(_depronoun((desc or "").strip()))
+    interp = _neutralize(_depronoun((interp or "").strip()))
+    # 去掉破折号/前导语
+    interp = re.sub(r"^(——|-+)\s*", "", interp)
+    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容|这种面相)[，、： ]*", "", interp)
+    # 合并
     s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
+    # 统一标点 & 去掉句首孤立标点
     s = re.sub(r"[；;]+", "；", s)
-    s = re.sub(r"^\s*[，,。；;：:]+", "", s)  # 清理句首多余标点
+    s = re.sub(r"^[，,。；;：:]+", "", s)      # 关键：去掉“。，”之类
     s = re.sub(r"，，+", "，", s)
     return _dedupe_smart(s)
 
 def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
+    # 兼容“面相/面容”，都归一到“面容”键
+    alias = {"面相":"面容"}
     traits = []
-    new_ta = {}
-    for key in ["姿态","神情","面容"]:
-        o = (ta.get(key) or {}).copy()
+    new_ta: Dict[str,Any] = {}
+
+    # 采集原始键，并按优先顺序输出
+    keys_in = list(ta.keys()) if isinstance(ta, dict) else []
+    wanted_order = ["姿态","神情","面容"]
+    # 将别名并入
+    normalized = {}
+    for k in keys_in:
+        v = (ta.get(k) or {})
+        k2 = alias.get(k, k)
+        # 若“面容”已存在且又来一个“面相”，以“面容”为准，补充缺失字段
+        if k2 in normalized and isinstance(v, dict):
+            base = normalized[k2]
+            for sub in ["说明","卦象","解读","性格倾向"]:
+                if sub not in base or not base.get(sub):
+                    base[sub] = v.get(sub) or base.get(sub)
+        else:
+            normalized[k2] = v
+
+    for key in wanted_order:
+        o = (normalized.get(key) or {}).copy()
+        if not isinstance(o, dict): o = {}
+
+        # 收集“性格倾向”
         tend = (o.get("性格倾向") or "").strip().rstrip("；;。")
-        if tend: traits.append(tend)
+        if tend:
+            traits.append(tend)
+
+        # 合并说明+解读
         desc = (o.get("说明") or "")
         inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
+
+        # 卦名清洗：去掉 “卦（…）/卦” 以及句末残标点
         hexname = (o.get("卦象") or "").strip()
-        # 卦名末尾清洗：去掉句号/点号与“卦”字
-        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
+        hexname = re.sub(r"(卦（[^）]*）|卦)$", "", hexname)     # 去掉尾部“卦（天）/卦”
+        hexname = re.sub(r"[。\.。\s]+$", "", hexname)          # 去尾部标点
         o["卦象"] = hexname
-        # 卦名末尾清洗：去掉句号/点号与“卦”字（如“乾。卦”→“乾”）
-        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
+
+        # 轻量提示标签（可按需开关）
         pro = ""
         if hexname in HEX_SUMMARY:
-            # 轻量专业提示：如【乾·主导】
             kw = HEX_SUMMARY[hexname].split("·")[1] if "·" in HEX_SUMMARY[hexname] else HEX_SUMMARY[hexname]
-            pro = f"【{hexname}·{kw}】"
+            # 统一成【卦·关键词】；若你想完全隐藏该提示，注释掉下一行即可
+            # pro = f""
+
         if pro and merged:
+            # 确保提示不“离地”：把提示放在最前，后接白话解释
             merged = f"{pro} {merged}"
-        o["说明"] = ""  # 合并进“解读”后清空，避免 UI 重复
+
+        o["说明"] = ""                 # 合并进“解读”后清空，避免 UI 重复
         o["解读"] = merged.strip()
         o["性格倾向"] = ""
-        new_ta[key] = o
-    for k in ta.keys():
-        if k not in new_ta:
-            new_ta[k] = ta[k]
-    return traits, new_ta
 
+        new_ta[key] = o
+
+    # 把未覆盖的其他键保留（但“面相”不再重复输出）
+    for k, v in normalized.items():
+        if k not in new_ta:
+            new_ta[k] = v
+    return traits, new_ta
 
 def _to_points(s: str, max_items: int = 4) -> List[str]:
     """Split a sentence by Chinese semicolons/commas into 2-4 concise bullet points."""
@@ -434,9 +473,17 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     synthesized = _synthesize_combo(hexes, ta, traits)
     one = (ta.get("总结") or out.get("summary",""))
     overview = (synthesized or one).strip().rstrip("；;")
-    meta["overview_card"] = {"title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
-                             "summary": overview}
-
+    # 如果 overview 的第一行是标题，则去掉标题行，只保留内容行
+    if overview.startswith("🔮 卦象组合"):
+        content_lines = overview.splitlines()
+        if len(content_lines) > 1:
+            overview = "\n".join(content_lines[1:]).strip()
+    
+    meta["overview_card"] = {
+        "title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
+        "summary": overview
+    }
+   
     try:
         out["confidence"] = float(out.get("confidence",0.0))
     except Exception:
