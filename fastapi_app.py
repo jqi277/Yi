@@ -160,12 +160,78 @@ WUXING = {
 SHENG = {"木":"火","火":"土","土":"金","金":"水","水":"木"}
 KE    = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
 
+# —— 经文提示（简洁可读）——
+CLASSIC_TIPS = {
+    "乾": "《乾卦》亢龙有悔：过强则折，宜收锋敛势",
+    "坤": "《坤卦》含弘光大：厚载不争，忌因循不决",
+    "离": "《离卦》明两作：洞察高也易苛求，宜以明驭明",
+    "坎": "《坎卦》履霜坚冰至：居安思危，先证后断",
+    "震": "《震卦》震来虩虩：起势莫乱，定神而行",
+    "巽": "《巽卦》小亨：入微渗透，忌反复不决",
+    "艮": "《艮卦》艮其背：守界有度，忌僵硬不化",
+    "兑": "《兑卦》和而不媚：悦人不失节，忌逢迎失真",
+}
+
+# —— 元素 → 推荐调和卦 & 说明（当“相克”出现时给出补法）——
+ELEM_TO_HEX = {"金":"乾/兑", "火":"离", "水":"坎", "木":"震/巽", "土":"艮/坤"}
+REMEDY_PHRASE = {
+    # 用 X 制 Y 的直觉解释：只给一句“怎么做”
+    ("火","金"): "以水制火（增配坎）：先收信息降温节奏，再定夺",
+    ("木","土"): "以金伐木（增配乾/兑）：定规则、明边界，减少粘连",
+    ("土","水"): "以木破土（增配震/巽）：先动起来、打通阻滞",
+    ("水","火"): "以土泄水（增配艮/坤）：落到流程，稳住节律",
+    ("金","木"): "以火炼金（增配离）：先讲清理由，让执行有说服力",
+}
+
+# —— 五官默认卦象（用于更具体的面相语言）——
+FACE_HEX_DEFAULT = {
+    "眉": "巽",      # 风，条理/判断
+    "眼": "离",      # 火，明察/表达
+    "鼻": "艮",      # 山，定力/边界
+    "嘴": "兑",      # 泽，沟通/情绪
+    "颧/下巴": "坤", # 地，承载/稳重
+}
+
 def _rel(a: str, b: str) -> str:
     if not a or not b: return ""
     if a == b: return "同气相求"
     if SHENG.get(a) == b: return "相生"
     if KE.get(a) == b: return "相克"
     return "相并"
+
+def _harmony_suggestion(main_hex: str, other_hex: str) -> str:
+    """当 other 克 main 时，给一个“补第三元素”的调和建议。"""
+    if not (main_hex and other_hex): return ""
+    A = (WUXING.get(main_hex) or {}).get("element","")
+    B = (WUXING.get(other_hex) or {}).get("element","")
+    if not A or not B: return ""
+    # 若 B 克 A，则找一条 “X 制 B” 的建议
+    if KE.get(B) == A:
+        # 找对 REMEDY_PHRASE 的键： (B, A) 是“B克A”，我们需要“X制B”，按映射写死常见搭配
+        for (x, y), phrase in REMEDY_PHRASE.items():
+            if x == B:  # 这个映射是“用 ELEM(x) 去节制 x（=B）”
+                return f"调和建议：{phrase}"
+    return ""
+
+def _derive_archetype(main: str, mf_rel: str, bm_rel: str) -> str:
+    """从主卦与关系给个不生硬的人格标签（2~5字）。"""
+    if main in ("乾","震"):
+        if "相克" in (mf_rel or "") or "相克" in (bm_rel or ""): return "稳中带锋"
+        if "相生" in (mf_rel or "") or "比和" in (mf_rel or ""): return "刚柔相济"
+        return "张弛并进"
+    if main in ("坤","艮"):
+        if "相克" in (mf_rel or "") or "相克" in (bm_rel or ""): return "厚重而警"
+        if "相生" in (mf_rel or "") or "比和" in (mf_rel or ""): return "厚实开朗"
+        return "沉着中行"
+    if main == "离":
+        return "明断果决" if (mf_rel in ("相生","比和")) else "明慎并举"
+    if main == "兑":
+        return "和而不媚"
+    if main == "坎":
+        return "慎思笃行"
+    if main == "巽":
+        return "润物无声"
+    return "中和之姿"
 
 def _style_by_main_plain(h: str) -> str:
     # 主风格 → 白话解释
@@ -212,48 +278,32 @@ def _persona_line(h: str) -> str:
     vir = (WUXING.get(h) or {}).get("virtue","")
     return f"{h}（{ele}）：{vir}"
 
-
-
-
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
-    if not any([zh, sh, bh]):
-        return ""
+    if not any([zh, sh, bh]): return ""
 
-    def wx(h: str) -> str:
-        return (WUXING.get(h) or {}).get("element", "")
-
-    def sym(h: str) -> str:
-        return BAGUA_SYMBOLS.get(h, "")
-
-    def virtue(h: str) -> str:
-        return (WUXING.get(h) or {}).get("virtue", "")
+    wx   = lambda h: (WUXING.get(h) or {}).get("element","")
+    sym  = lambda h: BAGUA_SYMBOLS.get(h, "")
+    virt = lambda h: (WUXING.get(h) or {}).get("virtue","")
 
     def rel_from_to(a: str, b: str):
-        # a -> b 的五行方向（主×辅写“辅→主”，基×主写“基→主”）
         A, B = wx(a), wx(b)
-        if not A or not B:
-            return "", ""
-        if SHENG.get(A) == B:
-            return f"{A}生{B}", "相生"
-        if KE.get(A) == B:
-            return f"{A}克{B}", "相克"
-        if A == B:
-            return f"{A}同{B}", "比和"
+        if not A or not B: return "", ""
+        if SHENG.get(A) == B: return f"{A}生{B}", "相生"
+        if KE.get(A)   == B: return f"{A}克{B}", "相克"
+        if A == B:           return f"{A}同{B}", "比和"
         return f"{A}并{B}", "相并"
 
-    # 关系（按“对主”的方向）
-    mf_pair, mf_rel = rel_from_to(sh, zh)   # 辅 → 主
-    bm_pair, bm_rel = rel_from_to(bh, zh)   # 基 → 主
+    # 关系（按对主方向：辅→主 / 基→主）
+    mf_pair, mf_rel = rel_from_to(sh, zh)
+    bm_pair, bm_rel = rel_from_to(bh, zh)
 
-    # 行为语义：主-辅 与 基-主 分别给不同解释，更贴合你示例
     mf_note = {
         "相生": "同频协同，执行干脆",
         "相克": "风格有张力，推进需更多协调",
         "比和": "同频协同，执行干脆",
         "相并": "关注点不同，各擅其长",
     }.get(mf_rel, "")
-
     bm_note = {
         "相生": "根基助推，底盘给力",
         "相克": "旧经验牵扯，取舍要稳",
@@ -261,44 +311,44 @@ def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) ->
         "相并": "资源与目标各有侧重",
     }.get(bm_rel, "")
 
-    # 三条“人物线”（专业提示）：主 / 辅 / 基
     lines = []
-    if zh: lines.append(f"主{zh}（{wx(zh)}·{sym(zh)}）：{virtue(zh)}")
-    if sh: lines.append(f"辅{sh}（{wx(sh)}·{sym(sh)}）：{virtue(sh)}")
-    if bh: lines.append(f"基{bh}（{wx(bh)}·{sym(bh)}）：{virtue(bh)}")
-
-    # 两条“关系线”（不使用乘号，按你的格式）
+    # 三行主辅基
+    if zh: lines.append(f"主{zh}（{wx(zh)}·{sym(zh)}）：{virt(zh)}")
+    if sh: lines.append(f"辅{sh}（{wx(sh)}·{sym(sh)}）：{virt(sh)}")
+    if bh: lines.append(f"基{bh}（{wx(bh)}·{sym(bh)}）：{virt(bh)}")
+    # 两条关系
     if mf_rel: lines.append(f"主与辅（{mf_pair}）{mf_rel}：{mf_note}")
     if bm_rel: lines.append(f"基与主（{bm_pair}）{bm_rel}：{bm_note}")
+    # 若出现相克，给调和建议
+    if mf_rel == "相克":
+        hs = _harmony_suggestion(zh, sh)
+        if hs: lines.append(hs)
+    if bm_rel == "相克":
+        hs = _harmony_suggestion(zh, bh)
+        if hs: lines.append(hs)
 
-    # —— 收束为“整体格局”一句，更有易经味，长度稍加
-    OUTER = {
-        "乾":"外显刚健", "震":"外显奋发", "坤":"外显厚重", "艮":"外显持重",
-        "离":"外显明晰", "兑":"外显亲和", "巽":"外显通达", "坎":"外显谨慎"
-    }
-    INNER = {
-        "离":"内蕴明辨", "兑":"内蕴亲和", "坤":"内蕴承载", "艮":"内蕴定力",
-        "坎":"内蕴洞察", "巽":"内蕴协调", "震":"内蕴动能", "乾":"内蕴骨干"
-    }
+    # —— 三段式收束：外在气象 / 内在基质 / 运势格局 —— 
+    def kw(h: str):
+        s = HEX_SUMMARY.get(h, "")
+        return (s.split("·")[0] if s else "", s.split("·")[1] if ("·" in s) else "")
+    main_kw, main_trait = kw(zh)
+    fu_kw,   fu_trait   = kw(sh)
+    # 外在气象（主卦）
+    if zh:
+        lines.append(f"外在气象：以{zh}为纲（{main_kw}），先立标准再带节奏。{CLASSIC_TIPS.get(zh,'').split('：')[0]}可作镜鉴。")
+    # 内在基质（辅/基作用）
+    inner_frag = []
+    if sh: inner_frag.append(f"辅{sh}助{zh}（{mf_rel or '并行'}）")
+    if bh: inner_frag.append(f"基{bh}托底（{bm_rel or '并行'}）")
+    if inner_frag: lines.append("内在基质：" + "；".join(inner_frag) + "。")
+    # 运势格局（整体定性——不写“看准就先做第一步”这种口号）
+    left  = main_trait or "主导力"
+    right = fu_trait   or "亲和力"
+    soft  = "外刚内柔" if (mf_rel in ("相生","比和") and bm_rel in ("相生","比和")) else "张弛有度"
+    lines.append(f"运势格局：{soft}，既有{left}，又具{right}。以稳推进、分层决断为宜。")
 
-    outer = OUTER.get(zh, "外显平衡")
-    inner = INNER.get(sh, "内蕴均衡")
-
-    # 策略句按“关系态势”自适应
-    def strategy(mf: str, bm: str) -> str:
-        support = {"相生", "比和"}
-        if mf == "相克" or bm == "相克":
-            return "宜主动引领局势，同时在磨合中沉淀实力"
-        if mf in support and bm in support:
-            return "宜顺势整合资源，放大协同成效"
-        if mf == "相并" or bm == "相并":
-            return "宜明确优先级，分工并进，归一于目标"
-        return "宜稳中求进，先定原则再扩张"
-
-    lines.append(f"整体格局：{outer}，{inner}，{strategy(mf_rel, bm_rel)}。")
-
-    # 注意：这里不再把“🔮 卦象组合 …”塞进正文，避免与卡片标题重复
     return "\n".join(lines)
+
 
 def _human_status_sentence(s: set, domain: str) -> str:
     lines = []
@@ -381,69 +431,35 @@ def _combine_sentence(desc: str, interp: str) -> str:
     return _dedupe_smart(s)
 
 def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
-    # 兼容“面相/面容”，都归一到“面容”键
-    alias = {"面相":"面容"}
-    traits = []
-    new_ta: Dict[str,Any] = {}
-
-    # 采集原始键，并按优先顺序输出
-    keys_in = list(ta.keys()) if isinstance(ta, dict) else []
-    wanted_order = ["姿态","神情","面容"]
-    # 将别名并入
-    normalized = {}
-    for k in keys_in:
-        v = (ta.get(k) or {})
-        k2 = alias.get(k, k)
-        # 若“面容”已存在且又来一个“面相”，以“面容”为准，补充缺失字段
-        if k2 in normalized and isinstance(v, dict):
-            base = normalized[k2]
-            for sub in ["说明","卦象","解读","性格倾向"]:
-                if sub not in base or not base.get(sub):
-                    base[sub] = v.get(sub) or base.get(sub)
-        else:
-            normalized[k2] = v
-
-    for key in wanted_order:
-        o = (normalized.get(key) or {}).copy()
-        if not isinstance(o, dict): o = {}
-
-        # 收集“性格倾向”
+    traits, new_ta = [], {}
+    for key in ["姿态","神情","面容"]:
+        o = (ta.get(key) or {}).copy()
         tend = (o.get("性格倾向") or "").strip().rstrip("；;。")
-        if tend:
-            traits.append(tend)
+        if tend: traits.append(tend)
 
-        # 合并说明+解读
-        desc = (o.get("说明") or "")
-        inter = (o.get("解读") or "")
+        desc   = (o.get("说明") or "")
+        inter  = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
 
-        # 卦名清洗：去掉 “卦（…）/卦” 以及句末残标点
-        hexname = (o.get("卦象") or "").strip()
-        hexname = re.sub(r"(卦（[^）]*）|卦)$", "", hexname)     # 去掉尾部“卦（天）/卦”
-        hexname = re.sub(r"[。\.。\s]+$", "", hexname)          # 去尾部标点
+        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", (o.get("卦象") or "").strip())
         o["卦象"] = hexname
 
-        # 轻量提示标签（可按需开关）
         pro = ""
         if hexname in HEX_SUMMARY:
             kw = HEX_SUMMARY[hexname].split("·")[1] if "·" in HEX_SUMMARY[hexname] else HEX_SUMMARY[hexname]
-            # 统一成【卦·关键词】；若你想完全隐藏该提示，注释掉下一行即可
-            # pro = f""
+            pro = f""
 
-        if pro and merged:
-            # 确保提示不“离地”：把提示放在最前，后接白话解释
-            merged = f"{pro} {merged}"
+        tip = CLASSIC_TIPS.get(hexname, "")
+        if pro: merged = f"{pro} {merged}".strip()
+        if tip: merged = f"{merged}（经文提示：{tip}）".strip()
 
-        o["说明"] = ""                 # 合并进“解读”后清空，避免 UI 重复
-        o["解读"] = merged.strip()
+        o["说明"] = ""
+        o["解读"] = merged
         o["性格倾向"] = ""
-
         new_ta[key] = o
 
-    # 把未覆盖的其他键保留（但“面相”不再重复输出）
-    for k, v in normalized.items():
-        if k not in new_ta:
-            new_ta[k] = v
+    for k in ta.keys():
+        if k not in new_ta: new_ta[k] = ta[k]
     return traits, new_ta
 
 def _to_points(s: str, max_items: int = 4) -> List[str]:
@@ -468,11 +484,56 @@ def _merge_status_and_detail(status: str, detail: str) -> str:
     text = "；".join(parts).rstrip("；")
     return _dedupe_smart(text)
 
+def _confidence_breakdown(out: Dict[str,Any]) -> Dict[str,Any]:
+    meta = out.get("meta") or {}
+    ta   = meta.get("triple_analysis") or {}
+
+    # 1) 图像清晰度：无法读像素，这里用“五官条目齐全度” & 文本噪声占比当 proxy
+    face = meta.get("face_parts") or {}
+    face_count = sum(1 for k,v in (face or {}).items() if isinstance(v,dict) and (v.get("特征") or v.get("解读")))
+    clarity = min(1.0, 0.5 + 0.1 * face_count)  # 0.5~1.0 之间
+
+    # 2) 卦象一致性：三象是否齐、是否有比和/相生
+    hexes = [(ta.get("姿态") or {}).get("卦象",""), (ta.get("神情") or {}).get("卦象",""), (ta.get("面容") or {}).get("卦象","")]
+    present = [h for h in hexes if h]
+    uniq = len(set(present))
+    if len(present) < 2:
+        hx_cons = 0.5
+    elif uniq == 1:
+        hx_cons = 1.0  # 完全比和
+    else:
+        hx_cons = 0.8  # 有分工但不冲突，给 0.8
+
+    # 3) 特征显著性：三分象“解读”长度 & 去重后密度
+    texts = []
+    for k in ("姿态","神情","面容"):
+        t = (ta.get(k) or {}).get("解读","")
+        if t: texts.append(t)
+    avg_len = sum(len(t) for t in texts)/max(1,len(texts))
+    salience = 0.6 if avg_len < 30 else (0.8 if avg_len < 80 else 1.0)
+
+    # 配置权重（可微调）
+    w1, w2, w3 = 0.30, 0.40, 0.30
+    score = w1*clarity + w2*hx_cons + w3*salience
+    # 不覆盖模型自带 confidence，只给“解释”
+    return {
+        "weights":{"图像清晰度":w1,"卦象一致性":w2,"特征显著性":w3},
+        "scores":{"图像清晰度":round(clarity,2),"卦象一致性":round(hx_cons,2),"特征显著性":round(salience,2)},
+        "explain":"分项权重为经验值，用五官覆盖度、三象齐整度/比和度、与文本密度作为近似指标，仅用于帮助理解“90%把握”的来源，不代表统计学置信区间。"
+    }
+
 def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     out = dict(data)
     meta = out.get("meta") or {}
     if not isinstance(meta, dict): meta = {}
     out["meta"] = meta
+
+    # 用我们清洗/合并后的三分象解读覆盖顶层 sections（修掉“。，/。；”问题）
+out["sections"] = {
+    "姿态": (ta.get("姿态") or {}).get("解读",""),
+    "神情": (ta.get("神情") or {}).get("解读",""),
+    "面相": (ta.get("面容") or {}).get("解读",""),
+}
 
     ta = meta.get("triple_analysis") or {}
     traits, ta = _collect_traits_and_merge(ta)
@@ -504,6 +565,29 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         out["confidence"] = 0.0
     arch = (out.get("archetype") or "").strip()
     meta["headline"] = {"tag": arch, "confidence": out["confidence"]}
+
+    # 根据主卦与关系推导一个不生硬的标签
+    mf_pair, mf_rel = "", ""
+    bm_pair, bm_rel = "", ""
+    zh, sh, bh = (hexes + ["","",""])[:3]
+    def _rel_pair(a,b):
+        A, B = (WUXING.get(a) or {}).get("element",""), (WUXING.get(b) or {}).get("element","")
+        if not A or not B: return "", ""
+        if SHENG.get(A)==B: return f"{A}生{B}","相生"
+        if KE.get(A)==B:    return f"{A}克{B}","相克"
+        if A==B:            return f"{A}同{B}","比和"
+        return f"{A}并{B}","相并"
+    if zh and sh: mf_pair, mf_rel = _rel_pair(sh, zh)
+    if bh and zh: bm_pair, bm_rel = _rel_pair(bh, zh)
+    
+    auto_arch = _derive_archetype(zh, mf_rel, bm_rel)
+    if auto_arch:
+        out["archetype"] = auto_arch
+        meta["headline"]["tag"] = auto_arch
+    
+    # 可信度拆解（解释来源，不改原数值）
+    meta["confidence_breakdown"] = _confidence_breakdown(out)
+
 
     dd = meta.get("domains_detail") or {}
     status = _insight_for_domains(hexes)
@@ -549,9 +633,17 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
             if not isinstance(v, dict): continue
             feat = (v.get("特征") or "").strip().strip("。；;，, ")
             expl = (v.get("解读") or "").strip()
+            # 默认卦象补齐
+            if not v.get("卦象"):
+                v["卦象"] = FACE_HEX_DEFAULT.get(k, "")
+            # 若特征词已包含在解读里，去重
             if feat and expl and feat in expl:
                 import re as _re
                 expl = _re.sub(_re.escape(feat)+r"[，,；;]?", "", expl)
+            # 更具体一点的小提示（示例：鼻=艮）
+            if k == "鼻" and "艮" in v.get("卦象",""):
+                # 不知道是否“悬胆鼻”，给一个温和的防偏提醒
+                expl = (expl + "；鼻对应“艮”，高挺者目标感强，若形如悬胆者宜防刚愎").strip("；")
             v["特征"] = feat
             v["解读"] = re.sub(r"[；;]+", "；", expl).strip("；。 ")
     meta["face_parts"] = fps
