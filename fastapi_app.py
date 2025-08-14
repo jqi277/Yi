@@ -525,89 +525,73 @@ def _confidence_breakdown(out: Dict[str,Any]) -> Dict[str,Any]:
 def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     out = dict(data)
     meta = out.get("meta") or {}
-    if not isinstance(meta, dict): meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
     out["meta"] = meta
 
-    # 用我们清洗/合并后的三分象解读覆盖顶层 sections（修掉“。，/。；”问题）
-out["sections"] = {
-    "姿态": (ta.get("姿态") or {}).get("解读",""),
-    "神情": (ta.get("神情") or {}).get("解读",""),
-    "面相": (ta.get("面容") or {}).get("解读",""),
-    }
-
+    # 1) 合并三分象（会做去重/去“卦/。”等清洗）
     ta = meta.get("triple_analysis") or {}
     traits, ta = _collect_traits_and_merge(ta)
     meta["triple_analysis"] = ta
 
-    hexes = [(ta.get("姿态") or {}).get("卦象",""),
-             (ta.get("神情") or {}).get("卦象",""),
-             (ta.get("面容") or {}).get("卦象","")]
+    # 2) 用合并后的三分象回填顶层 sections，修掉“。，/。；”等
+    out["sections"] = {
+        "姿态": (ta.get("姿态") or {}).get("解读", ""),
+        "神情": (ta.get("神情") or {}).get("解读", ""),
+        "面相": (ta.get("面容") or {}).get("解读", ""),
+    }
+
+    # 3) 组合标题与总览（并裁掉首行标题）
+    hexes = [
+        (ta.get("姿态") or {}).get("卦象", ""),
+        (ta.get("神情") or {}).get("卦象", ""),
+        (ta.get("面容") or {}).get("卦象", "")
+    ]
     combo_title = " + ".join([h for h in hexes if h])
     meta["combo_title"] = combo_title
 
     synthesized = _synthesize_combo(hexes, ta, traits)
-    one = (ta.get("总结") or out.get("summary",""))
+    one = (ta.get("总结") or out.get("summary", ""))
     overview = (synthesized or one).strip().rstrip("；;")
-    # 如果 overview 的第一行是标题，则去掉标题行，只保留内容行
     if overview.startswith("🔮 卦象组合"):
-        content_lines = overview.splitlines()
-        if len(content_lines) > 1:
-            overview = "\n".join(content_lines[1:]).strip()
-    
+        lines = overview.splitlines()
+        if len(lines) > 1:
+            overview = "\n".join(lines[1:]).strip()
     meta["overview_card"] = {
         "title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
         "summary": overview
     }
-   
+
+    # 4) 可信度与人物标签抬头
     try:
-        out["confidence"] = float(out.get("confidence",0.0))
+        out["confidence"] = float(out.get("confidence", 0.0))
     except Exception:
         out["confidence"] = 0.0
     arch = (out.get("archetype") or "").strip()
     meta["headline"] = {"tag": arch, "confidence": out["confidence"]}
 
-    # 根据主卦与关系推导一个不生硬的标签
-    mf_pair, mf_rel = "", ""
-    bm_pair, bm_rel = "", ""
-    zh, sh, bh = (hexes + ["","",""])[:3]
-    def _rel_pair(a,b):
-        A, B = (WUXING.get(a) or {}).get("element",""), (WUXING.get(b) or {}).get("element","")
-        if not A or not B: return "", ""
-        if SHENG.get(A)==B: return f"{A}生{B}","相生"
-        if KE.get(A)==B:    return f"{A}克{B}","相克"
-        if A==B:            return f"{A}同{B}","比和"
-        return f"{A}并{B}","相并"
-    if zh and sh: mf_pair, mf_rel = _rel_pair(sh, zh)
-    if bh and zh: bm_pair, bm_rel = _rel_pair(bh, zh)
-    
-    auto_arch = _derive_archetype(zh, mf_rel, bm_rel)
-    if auto_arch:
-        out["archetype"] = auto_arch
-        meta["headline"]["tag"] = auto_arch
-    
-    # 可信度拆解（解释来源，不改原数值）
-    meta["confidence_breakdown"] = _confidence_breakdown(out)
-
-
+    # 5) 事业/感情：状态与建议（合并为更人话的要点 + 列表）
     dd = meta.get("domains_detail") or {}
     status = _insight_for_domains(hexes)
     merged_status = {
-        "事业": _merge_status_and_detail(status.get("事业",""), dd.get("金钱与事业","")),
-        "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
+        "事业": _merge_status_and_detail(status.get("事业", ""), dd.get("金钱与事业", "")),
+        "感情": _merge_status_and_detail(status.get("感情", ""), dd.get("配偶与感情", "")),
     }
     meta["domains_status"] = merged_status
-    meta["domains_status_list"] = {k:_to_points(v) for k,v in merged_status.items()}
+    meta["domains_status_list"] = {k: _to_points(v) for k, v in merged_status.items()}
     meta["domains_suggestion"] = {
-        "事业": _imperative_suggestion(dd.get("金钱与事业",""), hexes, "事业"),
-        "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
+        "事业": _imperative_suggestion(dd.get("金钱与事业", ""), hexes, "事业"),
+        "感情": _imperative_suggestion(dd.get("配偶与感情", ""), hexes, "感情"),
     }
     meta["domains_suggestion_list"] = {
         "事业": _imperative_suggestion_points(hexes, "事业"),
-        "感情": _imperative_suggestion_points(hexes, "感情")
+        "感情": _imperative_suggestion_points(hexes, "感情"),
     }
 
+    # 6) 文本清洗器
     def _clean(s):
-        if not isinstance(s, str): return s
+        if not isinstance(s, str):
+            return s
         s = s.replace("——", "，")
         s = re.sub(r"[；;]+", "；", s)
         s = re.sub(r"；([。！])", r"\1", s)
@@ -616,40 +600,35 @@ out["sections"] = {
         s = _neutralize(s)
         return _dedupe_smart(s)
 
-    out["summary"] = _clean(out.get("summary",""))
-    out["archetype"] = _clean(out.get("archetype",""))
+    out["summary"] = _clean(out.get("summary", ""))
+    out["archetype"] = _clean(out.get("archetype", ""))
 
     def _deep_clean(x):
         if isinstance(x, dict):
-            return {k:_deep_clean(v) for k,v in x.items()}
+            return {k: _deep_clean(v) for k, v in x.items()}
         if isinstance(x, list):
             return [_deep_clean(v) for v in x]
         return _clean(x)
 
-    # face_parts 去重：若“解读”包含“特征”，去掉重复；统一标点
+    # 7) 五官细节：若“解读”里重复“特征”，则去重，统一标点
     fps = meta.get("face_parts") or {}
     if isinstance(fps, dict):
         for k, v in list(fps.items()):
-            if not isinstance(v, dict): continue
+            if not isinstance(v, dict):
+                continue
             feat = (v.get("特征") or "").strip().strip("。；;，, ")
             expl = (v.get("解读") or "").strip()
-            # 默认卦象补齐
-            if not v.get("卦象"):
-                v["卦象"] = FACE_HEX_DEFAULT.get(k, "")
-            # 若特征词已包含在解读里，去重
             if feat and expl and feat in expl:
                 import re as _re
-                expl = _re.sub(_re.escape(feat)+r"[，,；;]?", "", expl)
-            # 更具体一点的小提示（示例：鼻=艮）
-            if k == "鼻" and "艮" in v.get("卦象",""):
-                # 不知道是否“悬胆鼻”，给一个温和的防偏提醒
-                expl = (expl + "；鼻对应“艮”，高挺者目标感强，若形如悬胆者宜防刚愎").strip("；")
+                expl = _re.sub(_re.escape(feat) + r"[，,；;]?", "", expl)
             v["特征"] = feat
             v["解读"] = re.sub(r"[；;]+", "；", expl).strip("；。 ")
     meta["face_parts"] = fps
 
+    # 8) 全量深度清洗
     out["meta"] = _deep_clean(meta)
     return out
+
 
 @app.get("/health")
 def health(): return {"status":"ok"}
