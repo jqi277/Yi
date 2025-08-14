@@ -190,35 +190,55 @@ def _relation_plain(rel: str, pos: str) -> str:
         if rel == "同气相求": return "内外一致：想法和做法不打架"
         return "内在与目标各走各的：用简单规则把它们拢在一起"
 
+
+def _pair_label(main_hex: str, other_hex: str, relation: str, which: str) -> str:
+    """which: '辅' or '基'，生成“主X（金）×辅Y（土）：土生金 → 助力/制衡/比和/并行（白话）”"""
+    def e(h): return (WUXING.get(h) or {}).get("element","")
+    A, B = (WUXING.get(main_hex) or {}).get("element",""), (WUXING.get(other_hex) or {}).get("element","")
+    tag = {"相生":"助力","相克":"制衡","同气相求":"比和","相并":"并行"}.get(relation,"并行")
+    if not (main_hex and other_hex and A and B and relation): return ""
+    # 以“主线受何影响”为口吻：由 other → main 的作用方向
+    arrow = "生" if SHENG.get(B)==A else ("克" if KE.get(B)==A else ("同" if A==B else "并"))
+    core = f"主{main_hex}（{A}）×{which}{other_hex}（{B}）：{B}{arrow}{A} → {tag}"
+    # 白话（描述而非指令）
+    expl = {
+        "助力":"配合顺畅，优势互补",
+        "制衡":"风格有张力，推进需更多协调",
+        "比和":"同频协同，执行干脆",
+        "并行":"关注点不同，各擅其长"
+    }[tag]
+    return core + "（" + expl + "）"
+
+def _persona_line(h: str) -> str:
+    if not h: return ""
+    ele = (WUXING.get(h) or {}).get("element","")
+    vir = (WUXING.get(h) or {}).get("virtue","")
+    return f"{h}（{ele}）：{vir}"
+
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
-    zh, sh, bh = (hexes + ["", "", ""])[:3]
-    keys = [h for h in [zh, sh, bh] if h]
-    if not keys: return ""
+    zh, sh, bh = (hexes + [\"\", \"\", \"\"])[:3]
 
-    def vw(h, key): 
-        return (WUXING.get(h) or {}).get(key, "")
+    # 1) 三象定位（主=核心、辅=助力/制衡、基=根基）
+    p_main = _persona_line(zh)
+    p_fu   = _persona_line(sh)
+    p_base = _persona_line(bh)
+    head = \"；\".join([(\"主\"+p_main) if p_main else \"\", (\"辅\"+p_fu) if p_fu else \"\", (\"基\"+p_base) if p_base else \"\"]).strip(\"；\") + \"。\"
 
-    # 1) 专业开头（主/辅/基 + 五行/德性）
-    parts = []
-    for role, h in (("主", zh), ("辅", sh), ("基", bh)):
-        if not h: continue
-        ele = vw(h,"element"); pol = vw(h,"polarity"); vir = vw(h,"virtue")
-        sym = BAGUA_SYMBOLS.get(h,"")
-        seg = f"{role}{h}（{sym}），属{ele}为{pol}，{vir}"
-        parts.append(seg)
-    lead = "；".join(parts) + "。"
+    # 2) 生克关系（主×辅，基×主），给出“助力/制衡/比和/并行”白话
+    rel_mf = _rel((WUXING.get(zh) or {}).get(\"element\",\"\"), (WUXING.get(sh) or {}).get(\"element\",\"\")) if zh and sh else \"\"
+    rel_bm = _rel((WUXING.get(bh) or {}).get(\"element\",\"\"), (WUXING.get(zh) or {}).get(\"element\",\"\")) if bh and zh else \"\"
+    pair_mf = _pair_label(zh, sh, rel_mf, \"辅\") if rel_mf else \"\"
+    pair_bm = _pair_label(zh, bh, rel_bm, \"基\") if rel_bm else \"\"
 
-    # 2) 关系白话解释 + 主风格白话
-    rel1 = _rel(vw(zh,"element"), vw(sh,"element")) if zh and sh else ""
-    rel2 = _rel(vw(bh,"element"), vw(zh,"element")) if bh and zh else ""
-    rel_texts = []
-    if rel1: rel_texts.append(_relation_plain(rel1, "mf"))
-    if rel2: rel_texts.append(_relation_plain(rel2, "bm"))
-    style = _style_by_main_plain(zh) if zh else "整体风格平衡"
+    # 3) 主风格锚点
+    style = _style_by_main_plain(zh) if zh else \"整体风格平衡\"
 
-    tail = " ".join(rel_texts + [style])
-
-    out = f"三象相合：{lead}{tail}。"
+    # 4) 汇总为人物画像（不包含建议）
+    lines = [head]
+    links = \"；\".join([t for t in [pair_mf, pair_bm] if t])
+    if links: lines.append(links + \"。\" )
+    lines.append(style + \"。\" )
+    out = \"三象相合：\" + \"\".join(lines)
     return _dedupe_smart(out)
 
 # ---- 状态 & 建议（更人话、更场景） ----
@@ -287,6 +307,8 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
         inter = (o.get("解读") or "")
         merged = _combine_sentence(desc, inter)
         hexname = (o.get("卦象") or "").strip()
+        # 卦名末尾清洗：去掉句号/点号与“卦”字
+        hexname = re.sub(r"[。\.\s]*(卦)?$", "", hexname)
         pro = ""
         if hexname in HEX_SUMMARY:
             # 轻量专业提示：如【乾·主导】
@@ -294,7 +316,7 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
             pro = f"【{hexname}·{kw}】"
         if pro and merged:
             merged = f"{pro} {merged}"
-        o["说明"] = desc.strip().rstrip("；;。")
+        o["说明"] = ""  # 合并入解读后清空，避免 UI 再拼接产生重复
         o["解读"] = merged.strip()
         o["性格倾向"] = ""
         new_ta[key] = o
@@ -371,6 +393,20 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         if isinstance(x, list):
             return [_deep_clean(v) for v in x]
         return _clean(x)
+
+    
+    # face_parts 去重复化：若“解读”已包含“特征”，则不再重复；并做标点清洗
+    fps = meta.get("face_parts") or {}
+    if isinstance(fps, dict):
+        for k, v in list(fps.items()):
+            if not isinstance(v, dict): continue
+            feat = (v.get("特征") or "").strip().strip("。；;，, ")
+            expl = (v.get("解读") or "").strip()
+            if feat and expl and feat in expl:
+                expl = re.sub(re.escape(feat)+r"[，,；;]?", "", expl)
+            v["特征"] = feat
+            v["解读"] = re.sub(r"[；;]+", "；", expl).strip("；；。 ")
+    meta["face_parts"] = fps
 
     out["meta"] = _deep_clean(meta)
     return out
