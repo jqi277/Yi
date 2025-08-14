@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.8.3"
+RUNTIME_VERSION = "3.8.5-ux"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
@@ -336,6 +336,25 @@ def _imperative_suggestion(detail: str, hexes: List[str], domain: str) -> str:
     add = "；".join(tips[:3])
     return (add + "。") if add else ""
 
+
+def _imperative_suggestion_points(hexes: List[str], domain: str) -> List[str]:
+    s = set([h for h in hexes if h])
+    tips = []
+    if domain == "事业":
+        if "乾" in s or "震" in s: tips.append("先把最重要的一件事定下来，今天推进一小步")
+        if "离" in s: tips.append("当面讲清理由，再落到具体做法")
+        if "兑" in s or "巽" in s: tips.append("找关键人聊一聊，先听对方的，再说自己的")
+        if "坤" in s or "艮" in s: tips.append("把范围和时间说清楚，别一口吃成胖子")
+        if "坎" in s: tips.append("做事前先核对信息，准备一个备选方案")
+    else:
+        if "兑" in s: tips.append("用平常语气聊心里的事，不用绕弯子")
+        if "坤" in s: tips.append("答应的事尽量按时做到，让对方有底")
+        if "离" in s: tips.append("把界限说清楚，让对方知道你的想法")
+        if "震" in s or "乾" in s: tips.append("在重要时刻主动一点")
+        if "坎" in s: tips.append("少靠猜，多确认")
+        if "艮" in s: tips.append("给彼此一些独处时间")
+    return tips[:3]
+
 # ---- 三分象合句 & 专业提示 ----
 def _combine_sentence(desc: str, interp: str) -> str:
     if not desc and not interp: return ""
@@ -380,6 +399,21 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
             new_ta[k] = ta[k]
     return traits, new_ta
 
+
+def _to_points(s: str, max_items: int = 4) -> List[str]:
+    """Split a sentence by Chinese semicolons/commas into 2-4 concise bullet points."""
+    if not s: return []
+    s = _neutralize(s)
+    s = re.sub(r"[；;]+", "；", s.strip("；。 \n\t"))
+    parts = [p.strip("；，。 \n\t") for p in s.split("；") if p.strip()]
+    if len(parts) <= 1:
+        parts = [p.strip("；，。 \n\t") for p in re.split(r"[，,]", s) if p.strip()]
+    seen, uniq = set(), []
+    for p in parts:
+        if p in seen: continue
+        seen.add(p); uniq.append(p)
+        if len(uniq) >= max_items: break
+    return uniq
 def _merge_status_and_detail(status: str, detail: str) -> str:
     detail_first = detail.split("。")[0].strip() if detail else ""
     detail_first = _neutralize(_strip_domain_lead(detail_first))
@@ -424,9 +458,14 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
         "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
     }
     meta["domains_status"] = merged_status
+    meta["domains_status_list"] = {k:_to_points(v) for k,v in merged_status.items()}
     meta["domains_suggestion"] = {
         "事业": _imperative_suggestion(dd.get("金钱与事业",""), hexes, "事业"),
         "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
+    }
+    meta["domains_suggestion_list"] = {
+        "事业": _imperative_suggestion_points(hexes, "事业"),
+        "感情": _imperative_suggestion_points(hexes, "感情")
     }
 
     def _clean(s):
