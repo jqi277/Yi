@@ -533,7 +533,7 @@ out["sections"] = {
     "姿态": (ta.get("姿态") or {}).get("解读",""),
     "神情": (ta.get("神情") or {}).get("解读",""),
     "面相": (ta.get("面容") or {}).get("解读",""),
-}
+    }
 
     ta = meta.get("triple_analysis") or {}
     traits, ta = _collect_traits_and_merge(ta)
