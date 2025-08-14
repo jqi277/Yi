@@ -9,7 +9,6 @@
   <style>
     body{background:radial-gradient(900px 540px at 50% -180px,#f8fafc 0%,#f1f5f9 60%,#e5e7eb 100%);}
     .card{background:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.06);padding:16px;}
-    #overviewLead{white-space:pre-line;}
     .pill{display:inline-flex;padding:.25rem .6rem;border-radius:999px;font-size:12px;background:#f5f3ff;color:#4f46e5;}
     .h2{font-weight:600;font-size:16px;}
     .stickybar{position:sticky;top:0;z-index:40;backdrop-filter:blur(6px);background:rgba(255,255,255,.85);}
@@ -90,7 +89,7 @@
       <div class="card">
         <div class="h2 mb-1">💼 事业</div>
         <div class="text-xs text-gray-500 mb-1">近期状态：</div>
-        <div id="bizInsight" class="text-sm text-gray-700 mb-2 whitespace-pre-wrap"></div>
+        <div id="bizInsight" class="text-sm text-gray-700 mb-2"></div>
         <div class="text-xs text-gray-500 mb-1">近期建议：</div>
         <div id="bizBody" class="text-sm text-gray-800 whitespace-pre-wrap"></div>
       </div>
@@ -98,7 +97,7 @@
       <div class="card">
         <div class="h2 mb-1">💗 感情</div>
         <div class="text-xs text-gray-500 mb-1">近期状态：</div>
-        <div id="loveInsight" class="text-sm text-gray-700 mb-2 whitespace-pre-wrap"></div>
+        <div id="loveInsight" class="text-sm text-gray-700 mb-2"></div>
         <div class="text-xs text-gray-500 mb-1">近期建议：</div>
         <div id="loveBody" class="text-sm text-gray-800 whitespace-pre-wrap"></div>
       </div>
@@ -111,6 +110,7 @@
 
 <script>
 const $=(id)=>document.getElementById(id);
+function g(o, path, d){try{var r=o;var a=path.split(".");for(var i=0;i<a.length;i++){if(!r||!(a[i] in r)){r=null;break;} r=r[a[i]];}return (r==null?d:r);}catch(e){return d;}}
 $("apiBase").textContent=window.API_BASE; $("docs").href=window.API_BASE+"/docs"; $("docsLink").href=window.API_BASE+"/docs";
 
 const BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
@@ -119,8 +119,8 @@ const drop=$("drop");
 drop.addEventListener("click",()=>$("file").click());
 drop.addEventListener("dragover",e=>{e.preventDefault(); drop.classList.add("border-indigo-400","bg-indigo-50/30");});
 drop.addEventListener("dragleave",e=>{drop.classList.remove("border-indigo-400","bg-indigo-50/30");});
-drop.addEventListener("drop",e=>{e.preventDefault(); drop.classList.remove("border-indigo-400","bg-indigo-50/30"); const f=e.dataTransfer.files?.[0]; if(f) setFile(f);});
-$("file").addEventListener("change",e=>{const f=e.target.files?.[0]; if(f) setFile(f);});
+drop.addEventListener("drop",e=>{e.preventDefault(); drop.classList.remove("border-indigo-400","bg-indigo-50/30"); const f=(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]); if(f) setFile(f);});
+$("file").addEventListener("change",e=>{const f=(e.target && e.target.files && e.target.files[0]); if(f) setFile(f);});
 function setFile(f){const url=URL.createObjectURL(f); $("preview").src=url; $("previewWrap").classList.remove("hidden"); window._file=f;}
 
 $("btnUpload").addEventListener("click", analyze);
@@ -128,7 +128,7 @@ $("btnUpload").addEventListener("click", analyze);
 $("copyBtn").addEventListener("click", async ()=>{
   try{
     const blocks = [];
-    const get = (id)=> (($(id)?.textContent||"").trim());
+    const get = (id)=> ((( $(id) && $(id).textContent )||"").trim());
 
     blocks.push("Selfy AI（移动版）");
     blocks.push("人格画像："+ get("archetypePill") + "｜可信度 " + get("confText"));
@@ -177,7 +177,7 @@ async function analyze(){
   const fd=new FormData(); fd.append("file", f, f.name);
   try{
     const rsp=await fetch(window.API_BASE+"/upload",{method:"POST", body:fd});
-    const d=await rsp.json(); if(!rsp.ok) throw new Error(d?.error||"接口错误"); render(d);
+    const d=await rsp.json(); if(!rsp.ok) throw new Error((d && d.error)||"接口错误"); render(d);
   }catch(e){ showErr(e.message||"请求失败"); }
   finally{ $("progress").classList.add("hidden"); $("btnUpload").disabled=false; }
 }
@@ -195,9 +195,9 @@ function neutralize(s){
 }
 
 function fmtSection(o){
-  const desc = (o?.["说明"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
-  const hex = (o?.["卦象"]||"").trim();
-  const interp = (o?.["解读"]||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
+  const desc = ((o && o["说明"])||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
+  const hex = ((o && o["卦象"])||"").trim();
+  const interp = ((o && o["解读"])||"").trim().replace(/^(他|她|TA|你|对方|其)(的)?[，、： ]*/, "");
   const sym = BAGUA_SYMBOLS[hex] ? "（"+BAGUA_SYMBOLS[hex]+"）" : "";
   const line2 = hex ? ("卦象："+hex+"卦"+sym) : "";
   const body = [desc, interp].filter(Boolean).join("，");
@@ -208,8 +208,8 @@ function fmtSection(o){
 function render(d){
   $("resultSec").classList.remove("hidden");
 
-  const tag=(d?.meta?.headline?.tag||d?.archetype||"人格画像");
-  const confVal=Number.isFinite(d?.meta?.headline?.confidence)?d.meta.headline.confidence:(d.confidence||0);
+  const tag = g(d,"meta.headline.tag", g(d,"archetype","人格画像"));
+  const let confVal = g(d,"meta.headline.confidence", null);
   $("archetypePill").textContent=tag; const conf=Math.round(confVal*100); $("confBar").style.width=Math.min(conf,100)+"%"; $("confText").textContent=conf+"%";
 
   $("titlePosture").textContent="🧍 姿态"; $("titleExpr").textContent="🙂 神情"; $("titleFace").textContent="👤 面相";
@@ -226,19 +226,13 @@ function render(d){
   $("faceParts").textContent=lines.join("\n");
 
   const overviewOne = (d?.meta?.overview_card?.summary) || d.summary || "";
-  $("overviewTitle").textContent = (d?.meta?.overview_card?.title) || "🔮 卦象组合";
-  $("overviewLead").textContent  = overviewOne;
+  $("overviewTitle").textContent = g(d,"meta.overview_card.title","🔮 卦象组合");
+  $("overviewLead").textContent  = g(d,"meta.overview_card.summary", d.summary || "");
 
-  $("bizInsight").textContent = (d?.meta?.domains_status_list?.["事业"]?.map(x=>"· "+x).join("
-")) || neutralize(d?.meta?.domains_status?.["事业"]||"");
-  $("loveInsight").textContent = (d?.meta?.domains_status_list?.["感情"]?.map(x=>"· "+x).join("
-")) || neutralize(d?.meta?.domains_status?.["感情"]||"");
-  $("bizBody").textContent = (d?.meta?.domains_suggestion_list?.["事业"]?.map(x=>"· "+x).join("
-"))
-    || neutralize((d?.meta?.domains_suggestion?.["事业"]) || (d?.meta?.domains_detail?.["金钱与事业"]) || "—");
-  $("loveBody").textContent = (d?.meta?.domains_suggestion_list?.["感情"]?.map(x=>"· "+x).join("
-"))
-    || neutralize((d?.meta?.domains_suggestion?.["感情"]) || (d?.meta?.domains_detail?.["配偶与感情"]) || "—");
+  $("bizInsight").textContent  = neutralize(g(d,"meta.domains_status.事业",""));
+  $("loveInsight").textContent = neutralize(g(d,"meta.domains_status.感情",""));
+  $("bizBody").textContent     = neutralize(g(d,"meta.domains_suggestion.事业", g(d,"meta.domains_detail.金钱与事业","—")));
+  $("loveBody").textContent    = neutralize(g(d,"meta.domains_suggestion.感情", g(d,"meta.domains_detail.配偶与感情","—")));
 }
 </script>
 </body>
