@@ -19,16 +19,16 @@
   <div class="max-w-md mx-auto p-4 space-y-4">
     <header class="flex items-center justify-between">
       <div>
-        <div class="text-xl font-bold tracking-tight">Selfy AI</div>
+        <div class="text-xl font-bold tracking-tight">Selfy AI</label>
         <div class="text-xs text-gray-500 mt-0.5">移动版 · 姿态 / 神情 / 面相</div>
       </div>
       <div class="text-xs text-gray-500"><a id="docs" class="underline" target="_blank">/docs</a></div>
     </header>
 
     <section class="card">
-      <div id="drop" class="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center hover:border-indigo-400 transition cursor-pointer bg-gray-50">
+      <label id="drop" class="border-2 border-dashed border-gray-300 rounded-xl p-4 text-center hover:border-indigo-400 transition cursor-pointer bg-gray-50" for="file" role="button" tabindex="0" class="cursor-pointer">
         <div class="text-gray-600 text-sm">点此选择图片，或拖拽到这里<br><span class="text-xs text-gray-400">JPG/PNG ≤ 15MB</span></div>
-        <input id="file" type="file" accept="image/*" class="hidden" />
+        <input id="file" type="file" accept="image/*" class="hidden" / style="position:absolute;width:1px;height:1px;opacity:0;left:-9999px;top:auto;overflow:hidden;" accept="image/*">
       </div>
       <button id="btnUpload" class="w-full mt-3 px-4 py-3 rounded-xl bg-indigo-600 text-white font-medium shadow hover:shadow-md disabled:opacity-50">开始分析</button>
       <div class="mt-2 text-xs text-gray-500">* 仅用于本次分析，不做存储。</div>
@@ -214,18 +214,18 @@ function render(d){
 
   $("titlePosture").textContent="🧍 姿态"; $("titleExpr").textContent="🙂 神情"; $("titleFace").textContent="👤 面相";
 
-  const ta=d?.meta?.triple_analysis||{};
+  const ta=(d && d.meta && d.meta.triple_analysis)||{};
   const s1=fmtSection(ta["姿态"]); $("postureHex").textContent=s1.line2; $("postureInterp").textContent=s1.line3;
   const s2=fmtSection(ta["神情"]); $("exprHex").textContent=s2.line2; $("exprInterp").textContent=s2.line3;
   const s3=fmtSection(ta["面容"]); $("faceHex").textContent=s3.line2; $("faceInterp").textContent=s3.line3;
 
-  const fp=d?.meta?.face_parts||{}; const lines=[];
+  const fp=(d && d.meta && d.meta.face_parts)||{}; const lines=[];
   [["眉","眉"],["眼","眼"],["鼻","鼻"],["嘴","嘴"],["颧/下巴","颧/下巴"]].forEach(([k,lab])=>{
     const it=fp[k]; if(it){ const feat=(it["特征"]||"").trim(); const inter=(it["解读"]||"").trim(); lines.push(lab+"："+feat+(inter?("；"+inter):"")); }
   });
   $("faceParts").textContent=lines.join("\n");
 
-  const overviewOne = (d?.meta?.overview_card?.summary) || d.summary || "";
+  const overviewOne = g(d,"meta.overview_card.summary", null) || d.summary || "";
   $("overviewTitle").textContent = g(d,"meta.overview_card.title","🔮 卦象组合");
   $("overviewLead").textContent  = g(d,"meta.overview_card.summary", d.summary || "");
 
