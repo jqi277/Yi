@@ -1,9 +1,10 @@
-# fastapi_app.py  (runtime v3.8.3, analysis logic v3.7.2)
-# 3.8.3: “易经可解释版”
-# - 卦象组合：主/辅/基专业开头 + 关系与主风格的“意象→白话解释”两步落地
-# - 三分象：开头轻量专业提示（如【乾·主导】），后接白话解释；强去重复
-# - 事业/感情：状态与建议避免口号/堆词，改为“可感知场景 + 明确动作”的句子
-# - 文本后处理：_dedupe_smart 保句读，清理“在…方面/…上”残影与代词
+# fastapi_app.py  (runtime v3.8.5-ux, analysis logic v3.7.2)
+# 3.8.5-ux: Mobile UX 强化
+# - 卦象组合：多行输出（主/辅/基各一行 + 主×辅/基×主两行 + 总结一行）
+# - 三分像：卦名清洗（去“。卦”）、句首标点清理（无“解读：。，…”）
+# - 事业/感情：近期状态/近期建议 → 要点分行（domains_status_list / domains_suggestion_list）
+# - 兼容旧字段：仍保留 domains_status / domains_suggestion 字符串
+
 import os, base64, json, logging, traceback, re, math
 from typing import Dict, Any, List
 
