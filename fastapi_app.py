@@ -213,67 +213,86 @@ def _persona_line(h: str) -> str:
     return f"{h}（{ele}）：{vir}"
 
 
+
 def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
     zh, sh, bh = (hexes + ["", "", ""])[:3]
-    if not any([zh, sh, bh]): return ""
+    if not any([zh, sh, bh]):
+        return ""
 
-    def vw(h, key): 
+    def vw(h: str, key: str) -> str:
         return (WUXING.get(h) or {}).get(key, "")
 
     def persona_line(role: str, h: str) -> str:
-        if not h: return ""
-        ele = vw(h,"element"); vir = vw(h,"virtue")
-        sym = BAGUA_SYMBOLS.get(h,"")
+        if not h:
+            return ""
+        ele = vw(h, "element")
+        vir = vw(h, "virtue")
+        sym = BAGUA_SYMBOLS.get(h, "")
         return f"{role}{h}（{ele}·{sym}）：{vir}"
 
-    def rel_phrase(a: str, b: str) -> (str, str):
-        # 采用“主对他者”的方向（a→b）来写五行词，如“金克木/土生金/金同金/金并水”
-        if not a or not b: return "", ""
-        A = vw(a,"element"); B = vw(b,"element")
-        if not A or not B: return "", ""
-        if SHENG.get(A) == B: return f"{A}生{B}", "相生"
-        if KE.get(A) == B:    return f"{A}克{B}", "相克"
-        if A == B:            return f"{A}同{B}", "比和"
+    def rel_phrase(a: str, b: str):
+        # 采用“a→b”的方向描述五行关系（主与辅、基与主）
+        if not a or not b:
+            return "", ""
+        A = vw(a, "element")
+        B = vw(b, "element")
+        if not A or not B:
+            return "", ""
+        if SHENG.get(A) == B:
+            return f"{A}生{B}", "相生"
+        if KE.get(A) == B:
+            return f"{A}克{B}", "相克"
+        if A == B:
+            return f"{A}同{B}", "比和"
         return f"{A}并{B}", "相并"
 
     # 1) 三象定位（每个一行）
-    lines = []
+    lines: list[str] = []
     for role, h in (("主", zh), ("辅", sh), ("基", bh)):
         pl = persona_line(role, h)
-        if pl: lines.append(pl)
+        if pl:
+            lines.append(pl)
 
     # 2) 关系两行（主与辅 / 基与主）
     mf_pair, mf_rel = rel_phrase(zh, sh)
     bm_pair, bm_rel = rel_phrase(bh, zh)
     if mf_rel:
-        expl_mf = {"相生":"配合顺畅，优势互补","相克":"风格有张力，留意节奏与分工","比和":"同频协同，执行干脆","相并":"关注点不同，需并行兼容"}[mf_rel]
+        expl_mf = {
+            "相生": "配合顺畅，优势互补",
+            "相克": "风格有张力，留意节奏与分工",
+            "比和": "同频协同，执行干脆",
+            "相并": "关注点不同，需并行兼容",
+        }[mf_rel]
         lines.append(f"主与辅（{mf_pair}）{mf_rel}：{expl_mf}")
     if bm_rel:
-        expl_bm = {"相生":"根基助推，底盘给力","相克":"旧经验牵扯，当下取舍要稳","比和":"内外一致，表达与行动不打架","相并":"资源与目标各有侧重"}[bm_rel]
+        expl_bm = {
+            "相生": "根基助推，底盘给力",
+            "相克": "旧经验牵扯，当下取舍要稳",
+            "比和": "内外一致，表达与行动不打架",
+            "相并": "资源与目标各有侧重",
+        }[bm_rel]
         lines.append(f"基与主（{bm_pair}）{bm_rel}：{expl_bm}")
 
-    # 3) 收束句：从主风格 + 关系关键词拼合
+    # 3) 收束句
     style = _style_by_main_plain(zh) if zh else "整体风格平衡"
-    # 从 HEX_SUMMARY 取关键词做“既…又…”（尽量选前两个）
-    def kw(h):
-        s = HEX_SUMMARY.get(h,"")
-        return (s.split("·")[0], s.split("·")[1] if "·" in s else "")
+
+    def kw(h: str):
+        s = HEX_SUMMARY.get(h, "")
+        if not s:
+            return ("", "")
+        parts = s.split("·")
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return parts[0], ""
+
     k1a, k1b = kw(zh)
     k2a, k2b = kw(sh)
-    # 兜底词
     left = k1b or k1a or "主导力"
     right = k2b or k2a or "亲和力"
-    summary = f"三者结合，形成{('外刚内柔' if mf_rel in ('相生','比和') and bm_rel in ('相生','比和') else '张弛有度')}的特质：既有{left}，又具{right}。{style}。"
-    lines.append(summary)
+    soft = "外刚内柔" if (mf_rel in ("相生", "比和") and bm_rel in ("相生", "比和")) else "张弛有度"
+    summary = f"三者结合，形成{soft}的特质：既有{left}，又具{right}。{style}。"
 
-    out = "三象相合：
-" + "
-".join(lines)
-    return _dedupe_smart(out)
-
-
-
-# ---- 状态 & 建议（更人话、更场景） ----
+    # ---- 状态 & 建议（更人话、更场景） ----
 def _human_status_sentence(s: set, domain: str) -> str:
     lines = []
     if domain == "事业":
