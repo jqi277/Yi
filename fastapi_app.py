@@ -1,20 +1,15 @@
-# fastapi_app.py  (runtime v3.9.0 · YiJing inference)
-# - Tri-image (姿态/神情/面相) stays intact from upstream (model v3.7.2 style)
-# - NEW: 卦象组合(三合象) = 人物画像（主/辅/基 + 五行生克，严禁建议口吻）
-# - NEW: 事业/感情 = 近期状态(bullets) + 近期建议(bullets)，完全按词库与生克推导
-# - Lexicon hot-load: yijing_lexicon.json in same folder; reload on every request
-# - Render-compatible; no external state required
-import os, json, re, base64, logging, traceback
-from typing import Any, Dict, List, Tuple
+# fastapi_app.py  (runtime v3.7.9, analysis logic v3.7.2, post-processor for phrasing & synthesis)
+import os, base64, json, logging, traceback, re, math
+from typing import Dict, Any, List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.9.0"
-ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372")  # model prompt profile
+RUNTIME_VERSION = "3.7.9"
+ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()  # default 372
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
 
@@ -22,42 +17,22 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("selfy-ai")
 
-app = FastAPI(title="Selfy AI — YiJing Inference API", version=RUNTIME_VERSION)
+app = FastAPI(title="Selfy AI - YiJing Analysis API", version=RUNTIME_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# OpenAI client
 try:
     client = OpenAI()
 except Exception as e:
     logger.error("OpenAI client init failed: %s", e); client=None
 
-# --- Utils ---
 BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}
 
+# ---------------- helpers ----------------
 def _to_data_url(content: bytes, content_type: str) -> str:
     return f"data:{content_type};base64,{base64.b64encode(content).decode('utf-8')}"
 
-# --- Lexicon ---
-def load_lexicon() -> Dict[str, Any]:
-    """Hot-load lexicon every call. Must be placed next to this file."""
-    path = os.path.join(os.path.dirname(__file__), "yijing_lexicon.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.warning("Lexicon missing or invalid, using minimal fallback: %s", e)
-        # Minimal fallback for safety
-        return {
-            "persona": {"乾":"刚健自强","坤":"厚德载物","离":"明辨表达","兑":"亲和交流","震":"行动开局","巽":"协调入微","坎":"谨慎求证","艮":"止定稳守"},
-            "domains": {"career":{},"love":{}},
-            "wuxing":{"乾":"金","兑":"金","离":"火","震":"木","巽":"木","坎":"水","艮":"土","坤":"土"},
-            "sheng":{"木":"火","火":"土","土":"金","金":"水","水":"木"},
-            "ke":{"木":"土","土":"水","水":"火","火":"金","金":"木"},
-            "fuse":{"生":"特质互补，更容易形成合力","克":"风格有冲突，需要先对齐方式再推进","比":"风格一致，优势被放大，同时要留意盲区","并":"各有侧重，分工清晰，互不干扰"},
-            "rel_influence":{"career":{},"love":{}}
-        }
-
-# --- OpenAI tool schema ---
-def _build_tools_schema():
+def _build_tools_schema() -> List[Dict[str, Any]]:
     return [{
       "type":"function",
       "function":{
@@ -79,25 +54,57 @@ def _build_tools_schema():
       }
     }]
 
-# --- OpenAI prompt (把“面容”=>“面相”，并要求返回 meta.triple_analysis) ---
+def _json_hint() -> str:
+    return ("只以 JSON object 返回（必须 JSON）。示例:{\"summary\":\"…\",\"archetype\":\"…\",\"confidence\":0.9,"
+            "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
+            "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
+            "\"meta\":{\"triple_analysis\":{\"姿态\":{\"说明\":\"…\",\"卦象\":\"艮\",\"解读\":\"…\",\"性格倾向\":\"…\"},\"神情\":{…},\"面容\":{…},\"组合意境\":\"…\",\"总结\":\"…\"},"
+            "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…\"},\"眼\":{…},\"鼻\":{…},\"嘴\":{…},\"颧/下巴\":{…}},"
+            "\"domains_detail\":{\"金钱与事业\":\"…(60–90字)\",\"配偶与感情\":\"…(60–90字)\"}}}")
+
 def _prompt_for_image_v372():
     sys = (
       "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
-      "严格按“三象四段式”分析：【姿态/神情/面相】三部分。每部分包含："
-      "1) 说明：1句，客观描绘；2) 卦象：仅写一个八卦名；3) 解读：1–2句；4) 性格倾向：1–2句。"
-      "随后：5) 卦象组合（90–150字）；6) 总结性格印象（20–40字）；7) archetype（2–5字）。"
-      "同时："
-      "· 在 meta.face_parts 中给【眉/眼/鼻/嘴/颧/下巴】（覆盖5项）特征与解读；"
-      "· 在 meta.triple_analysis 中分别给【姿态/神情/面相】的 {说明, 卦象, 解读, 性格倾向}。"
-      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中各写 60–90 字建议。"
-      "通过 submit_analysis_v3 工具以 JSON 返回，不要输出自由文本。"
+      "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分必须包含："
+      "1) 说明：1句，客观描绘外观/动作/气质；"
+      "2) 卦象：仅写一个卦名（艮/离/兑/乾/坤/震/巽/坎）；"
+      "3) 解读：1–2句，基于卦象与观察做含义阐释；"
+      "4) 性格倾向：1–2句，独立成段，不要与“解读”重复措辞。"
+      "然后给出："
+      "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文 90–150 字（可与三象结论适度重合）；"
+      "6) 总结性格印象：20–40字，避免模板化；"
+      "7) 人格标签 archetype：2–5字中文，如“外冷内热/主导型/谨慎型”。"
+      "面相需拆成五官：在 meta.face_parts 中，给【眉/眼/鼻/嘴/颧/下巴】（任选5项覆盖）各写“特征（外观）”与“解读（基于易经）”。"
+      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中分别写 60–90 字建议文本。"
+      "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。本消息含“JSON”以满足 API 要求。"
     )
-    user = "请按 3.7.2 风格对图像进行分析，并严格以工具返回 JSON。"
+    user = "请按 3.7.2 风格分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
     return [{"role":"system","content":sys},{"role":"user","content":user}]
 
-def _call_oai(messages):
-    if client is None:
-        raise RuntimeError("OpenAI client not initialized")
+def _inflate_dotted_keys(obj: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(obj, dict): return obj
+    out: Dict[str, Any] = {}
+    for k,v in obj.items():
+        if "." not in k:
+            out[k] = _inflate_dotted_keys(v) if isinstance(v, dict) else v
+    for k,v in obj.items():
+        if isinstance(k, str) and "." in k:
+            head, tail = k.split(".", 1)
+            base = out.setdefault(head, {})
+            if not isinstance(base, dict): base = {}; out[head] = base
+            cur = base
+            parts = tail.split(".")
+            for i, p in enumerate(parts):
+                if i == len(parts)-1:
+                    cur[p] = v
+                else:
+                    cur = cur.setdefault(p, {})
+    for k in list(out.keys()):
+        if isinstance(out[k], dict):
+            out[k] = _inflate_dotted_keys(out[k])
+    return out
+
+def _call_openai(messages):
     return client.chat.completions.create(
         model="gpt-4o",
         temperature=0.4,
@@ -107,283 +114,209 @@ def _call_oai(messages):
         messages=messages
     )
 
-# ---------- HOTFIX: robust extraction for OpenAI responses ----------
-def _looks_like_json(s: str) -> bool:
-    s = (s or "").strip()
-    return s.startswith("{") and s.endswith("}")
+# ---------- Synthesis helpers ----------
+HEX_SUMMARY = {
+    "乾":"自信·领导·果断", "坤":"包容·稳定·承载", "震":"行动·突破·起势", "巽":"协调·渗透·说服",
+    "坎":"谨慎·探深·智谋", "离":"明晰·表达·洞察", "艮":"止定·边界·稳重", "兑":"亲和·交流·悦人"
+}
 
-def extract_selfy_payload(resp) -> dict:
-    """
-    Try all possible shapes:
-    1) tool_calls[0].function.arguments  (modern tools)
-    2) function_call.arguments            (older)
-    3) message.content as JSON string     (json_object fallback)
-    Return {} if none works.
-    """
-    payload = {}
-
-    try:
-        # 1) tool_calls
-        msg = resp.choices[0].message
-        if getattr(msg, "tool_calls", None):
-            for tc in msg.tool_calls:
-                fn = getattr(tc, "function", None)
-                if fn and getattr(fn, "name", "") == "submit_analysis_v3":
-                    args = getattr(fn, "arguments", "") or ""
-                    if args and _looks_like_json(args):
-                        payload = json.loads(args)
-                        break
-
-        # 2) function_call (older)
-        if not payload and getattr(msg, "function_call", None):
-            fc = msg.function_call
-            args = getattr(fc, "arguments", "") or ""
-            if args and _looks_like_json(args):
-                payload = json.loads(args)
-
-        # 3) message.content as JSON
-        if not payload:
-            content = getattr(msg, "content", "") or ""
-            if content and _looks_like_json(content):
-                payload = json.loads(content)
-
-    except Exception as e:
-        logging.error("[PARSE] exception: %s", e, exc_info=True)
-
-    # 最后兜底：确保关键字段存在，避免前端空白
-    if payload and isinstance(payload, dict):
-        payload.setdefault("summary", "")
-        payload.setdefault("archetype", "")
-        payload.setdefault("confidence", 0.0)
-        payload.setdefault("sections", {"姿态": "", "神情": "", "面相": ""})
-        payload.setdefault("domains", [])
-        payload.setdefault("meta", {})
-
-    if DEBUG:
-        try:
-            logging.debug("[PARSE] raw kind: tool_calls=%s, function_call=%s, content_len=%s",
-                          bool(getattr(resp.choices[0].message, "tool_calls", None)),
-                          bool(getattr(resp.choices[0].message, "function_call", None)),
-                          len((getattr(resp.choices[0].message, "content", "") or "")))
-            logging.debug("[PARSE] payload keys: %s", list(payload.keys()) if payload else [])
-        except Exception:
-            pass
-
-    return payload
-# ---------- /HOTFIX ----------
-
-
-# --- Text cleaners ---
-DOMAIN_LEADS = r"(在(金钱与事业|配偶与感情|事业|感情)(方面|中|里)?|目前|近期|当下)"
-# --- Text cleaners（加入“面相”到停用词） ---
-_STOPWORDS = r"(姿态|神情|面相|面容|整体|气质|形象|给人以|一种|以及|并且|而且|更显|显得|展现出|流露出|透露出)"
-
-def _depronoun(s:str)->str:
-    if not isinstance(s,str): return s
-    s = re.sub(r"^(他|她|TA|你|对方|其)(的)?[，、： ]*", "", s.strip())
-    s = re.sub(r"^(在(事业|感情|生活)[上中]|目前|近期)[，、： ]*", "", s)
-    return s
-def _neutralize(s:str)->str:
-    if not isinstance(s,str): return s
-    s = re.sub(r"(他|她|TA|对方|其)(的)?", "", s.strip())
-    s = re.sub(DOMAIN_LEADS + r"[，、： ]*", "", s)
-    s = re.sub(r"(可能|或许|也许)[，、 ]*", "", s)
-    s = re.sub(r"[，,]{2,}", "，", s)
-    s = re.sub(r"[；;]{2,}", "；", s)
-    return s.strip("；，。 ")
-def _canon_key(s:str)->str:
-    if not isinstance(s,str): return ""
-    k = re.sub(_STOPWORDS, "", s)
-    k = re.sub(r"[的地得]", "", k); k = re.sub(r"\s+", "", k)
-    return k
-def _dedupe_smart(s:str)->str:
-    if not isinstance(s,str): return s
-    s = s.strip("。；，,; ")
-    sentences = re.split(r"[。！？]", s)
-    out = []
-    for sen in sentences:
-        sen = sen.strip("，,;； ")
-        if not sen: continue
-        parts = re.split(r"[，,；;]", sen)
-        seen, kept = set(), []
-        for p in parts:
-            t = p.strip(); 
-            if not t: continue
-            ck = _canon_key(t)
-            if ck and ck not in seen:
-                seen.add(ck); kept.append(t)
-        out.append("，".join(kept))
-    return "。".join(out) + ("。" if out else "")
-
-# --- YiJing inference helpers ---
-def _rel(el_a:str, el_b:str, sheng:Dict[str,str], ke:Dict[str,str])->str:
-    if not el_a or not el_b: return "并"
-    if el_a == el_b: return "比"
-    if sheng.get(el_a) == el_b: return "生"
-    if ke.get(el_a) == el_b: return "克"
-    return "并"
-
-def _synthesize_combo(lex:Dict[str,Any], h1:str, h2:str, h3:str)->str:
-    """三合象：人物画像（无建议）"""
-    persona = lex.get("persona",{})
-    wuxing  = lex.get("wuxing",{})
-    sheng   = lex.get("sheng",{})
-    ke      = lex.get("ke",{})
-    fuse    = lex.get("fuse",{})
-    parts = []
-    for role,h in (("主",h1),("辅",h2),("基",h3)):
-        if not h: continue
-        sym = BAGUA_SYMBOLS.get(h,"")
-        per = persona.get(h,"")
-        el  = wuxing.get(h,"")
-        p = f"{role}{h}（{sym}，{el}），{per}" if per else f"{role}{h}（{sym}，{el}）"
-        parts.append(p)
-    # relations
-    r1 = _rel(wuxing.get(h1,""), wuxing.get(h2,""), sheng, ke) if h1 and h2 else ""
-    r2 = _rel(wuxing.get(h3,""), wuxing.get(h1,""), sheng, ke) if h3 and h1 else ""
-    r_texts = []
-    if r1: r_texts.append(f"主与辅：{fuse.get(r1,'')}")
-    if r2: r_texts.append(f"基与主：{fuse.get(r2,'')}")
-    out = "；".join(parts) + "。" + " ".join([t for t in r_texts if t])
-    # 去“这类人/这种人”类指代：本段只陈述特质
-    return _dedupe_smart(_neutralize(_depronoun(out)))
-
-def _collect_bullets(source: Dict[str,Any], keys: List[str], limit:int=4)->List[str]:
-    seen, bullets = set(), []
-    for k in keys:
-        arr = (source.get(k) or {}).get("state") if isinstance(source.get(k), dict) else None
-        if not arr: continue
-        for item in arr:
-            t = _dedupe_smart(_neutralize(_depronoun(str(item)))).strip("。")
-            ck = _canon_key(t)
-            if ck and ck not in seen:
-                seen.add(ck); bullets.append("· " + t)
-            if len(bullets) >= limit: break
-        if len(bullets) >= limit: break
-    return bullets
-
-def _collect_advices(source: Dict[str,Any], keys: List[str], limit:int=3)->List[str]:
-    seen, bullets = set(), []
-    for k in keys:
-        arr = (source.get(k) or {}).get("advice") if isinstance(source.get(k), dict) else None
-        if not arr: continue
-        for item in arr:
-            t = _dedupe_smart(_neutralize(_depronoun(str(item)))).strip("。")
-            ck = _canon_key(t)
-            if ck and ck not in seen:
-                seen.add(ck); bullets.append("· " + t)
-            if len(bullets) >= limit: break
-        if len(bullets) >= limit: break
-    return bullets
-
-def _relation_influence(lex:Dict[str,Any], domain:str, el_main:str, el_fu:str, el_base:str)->List[str]:
-    sheng, ke = lex.get("sheng",{}), lex.get("ke",{})
-    rel_text = lex.get("rel_influence",{}).get(domain,{})
-    bullets = []
-    if el_main and el_fu:
-        r1 = _rel(el_main, el_fu, sheng, ke)
-        if rel_text.get(r1): bullets.append("· " + rel_text[r1])
-    if el_base and el_main:
-        r2 = _rel(el_base, el_main, sheng, ke)
-        if rel_text.get(r2): bullets.append("· " + rel_text[r2])
-    # de-dup
-    seen, out = set(), []
-    for b in bullets:
-        ck = _canon_key(b)
-        if ck not in seen:
-            seen.add(ck); out.append(b)
-    return out[:2]
-
-def _make_domains(lex:Dict[str,Any], h1:str, h2:str, h3:str)->Dict[str,Dict[str,List[str]]]:
-    doms = {"career":{}, "love":{}}
-    el = lex.get("wuxing",{})
-    keys = [k for k in [h1,h2,h3] if k]
-    for domain in ["career","love"]:
-        source = lex.get("domains",{}).get(domain,{}) or {}
-        status = _collect_bullets(source, keys, limit=4)
-        status += _relation_influence(lex, domain, el.get(h1,""), el.get(h2,""), el.get(h3,""))
-        # re-trim to <=4
-        status = status[:4]
-        advice = _collect_advices(source, keys, limit=3)
-        doms[domain] = {"status": status, "advice": advice}
-    return doms
-
-# --- Post-processing of model output ---
-def _combine_sentence(desc:str, interp:str)->str:
+def _combine_sentence(desc: str, interp: str) -> str:
+    """合并‘说明 + 解读’，去掉 —— 与多余标点，保留观察细节"""
     if not desc and not interp: return ""
-    desc  = _neutralize(_depronoun((desc or "").strip().rstrip("；;。")))
-    interp = _neutralize(_depronoun((interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")))
-    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面相)[，、： ]*", "", interp)
-    s = f"{desc}，{interp}" if (desc and interp) else (desc or interp)
-    s = re.sub(r"[；;]+", "；", s); s = re.sub(r"，，+", "，", s)
-    return _dedupe_smart(s)
+    desc = (desc or "").strip().rstrip("；;。")
+    interp = (interp or "").strip().lstrip("——").lstrip("- ").strip().rstrip("；;。")
+    # 去口头起句
+    interp = re.sub(r"^(这种|此类|这类|其|这种姿态|这种神情|这种面容)[，、： ]*", "", interp)
+    if desc and interp:
+        s = f"{desc}，{interp}。"
+    else:
+        s = f"{desc or interp}。"
+    s = re.sub(r"[；;]+", "，", s)
+    s = re.sub(r"，，+", "，", s)
+    return s
 
-def _coerce_output(tool_args: Dict[str,Any])->Dict[str,Any]:
-    out = dict(tool_args)
+def _synthesize_combo(hexes: List[str], ta: Dict[str,Any], traits: List[str]) -> str:
+    """根据三象卦象做 60–90 字综合总结，不机械拼装"""
+    keys = [h for h in hexes if h]
+    if not keys:
+        base = (ta.get("总结") or "") + ("。" + "；".join(traits) if traits else "")
+        return base.strip("；")
+    # 核心词
+    words = [HEX_SUMMARY.get(h, "") for h in keys]
+    words = "、".join([w for w in words if w])
+    # 从三象解读里抽取关键词（非常轻）
+    snippets = []
+    for k in ["姿态","神情","面容"]:
+        inter = (ta.get(k) or {}).get("解读","")
+        if inter:
+            # 取前 12 字
+            snippets.append(inter[:12])
+    snippet = "；".join(snippets[:2])
+    trait_text = "；".join(traits[:2])
+    text = f"三象相合，取其象意为「{words}」。{snippet}。"
+    if trait_text:
+        text += f"{trait_text}。"
+    # 长度控制到 ~60–90 字
+    text = re.sub(r"[；;]+", "；", text)
+    return text
+
+def _insight_for_domains(hexes: List[str]) -> Dict[str, str]:
+    s = set([h for h in hexes if h])
+    biz = []
+    if "乾" in s or "震" in s: biz.append("推进力强、目标感明确")
+    if "坤" in s or "艮" in s: biz.append("稳健务实、执行到位")
+    if "离" in s or "兑" in s: biz.append("表达协作顺畅、善于影响")
+    if "坎" in s: biz.append("风险意识较强、节奏更稳")
+    if "巽" in s: biz.append("擅协调资源、善整合")
+    love = []
+    if "兑" in s: love.append("互动亲和、沟通自然")
+    if "坤" in s: love.append("重承诺与包容")
+    if "离" in s: love.append("表达清晰、善于共情")
+    if "坎" in s: love.append("安全感需求偏高、较敏感")
+    if "震" in s or "乾" in s: love.append("主动靠近、决断力较强")
+    return {"事业": "；".join(biz), "感情": "；".join(love)}
+
+def _merge_status_and_detail(status: str, detail: str) -> str:
+    detail_first = detail.split("。")[0].strip() if detail else ""
+    if detail_first:
+        detail_first = re.sub(r"^(你|他|她|在事业上|在感情中|其|对方|目前|近期)[，、： ]*", "", detail_first)
+    parts = [p for p in [status, detail_first] if p]
+    text = "；".join(parts).rstrip("；")
+    return text
+
+def _imperative_suggestion(detail: str, hexes: List[str], domain: str) -> str:
+    # 将原有建议文本加工为更“可执行”的建议，并参考卦象给出导向
+    if not detail: detail = ""
+    s = set([h for h in hexes if h])
+    tips = []
+    if domain == "事业":
+        if "乾" in s or "震" in s: tips.append("制定阶段目标并主动拿结果")
+        if "离" in s: tips.append("强化公开表达与复盘")
+        if "兑" in s or "巽" in s: tips.append("多用协作影响推进关键人")
+        if "坤" in s or "艮" in s: tips.append("保持节奏与边界，先稳后进")
+        if "坎" in s: tips.append("预设风险与计划 B")
+    else:
+        if "兑" in s: tips.append("多用轻松语气与及时反馈")
+        if "坤" in s: tips.append("给足安全感并兑现承诺")
+        if "离" in s: tips.append("坦诚沟通想法与界限")
+        if "震" in s or "乾" in s: tips.append("在关键节点主动表达与推进")
+        if "坎" in s: tips.append("避免过度猜测，多求证再判断")
+    # 组合
+    base = detail.strip().rstrip("；")
+    add = "；".join(tips[:3])
+    if base and add:
+        out = base + "。建议：" + add + "。"
+    elif add:
+        out = "建议：" + add + "。"
+    else:
+        out = base or ""
+    # 文本清理
+    out = re.sub(r"[；;]+", "；", out)
+    return out
+
+def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
+    """收集三象里的'性格倾向'，并把每象的‘说明+解读’合并为一句"""
+    traits = []
+    new_ta = {}
+    for key in ["姿态","神情","面容"]:
+        o = (ta.get(key) or {}).copy()
+        tend = (o.get("性格倾向") or "").strip().rstrip("；;。")
+        if tend: traits.append(tend)
+        # 合并文本
+        desc = (o.get("说明") or "")
+        inter = (o.get("解读") or "")
+        merged = _combine_sentence(desc, inter)
+        o["说明"] = desc.strip().rstrip("；;。")
+        o["解读"] = merged.strip()
+        o["性格倾向"] = ""  # 交给组合卡合并
+        new_ta[key] = o
+    for k in ta.keys():
+        if k not in new_ta:
+            new_ta[k] = ta[k]
+    return traits, new_ta
+
+def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
+    # 基本整理
+    out = dict(data)
     meta = out.get("meta") or {}
     if not isinstance(meta, dict): meta = {}
     out["meta"] = meta
 
-    # Merge triple analysis parts
     ta = meta.get("triple_analysis") or {}
-    def _apply(o):
-        desc = (o.get("说明") or ""); inter = (o.get("解读") or "")
-        merged = _combine_sentence(desc, inter)
-        o["解读"] = merged; return o
-    for k in ["姿态","神情","面相"]:
-        if isinstance(ta.get(k), dict): ta[k] = _apply(ta[k])
+    traits, ta = _collect_traits_and_merge(ta)
     meta["triple_analysis"] = ta
 
-    # Trio hexes
-    h1 = (ta.get("姿态") or {}).get("卦象","") or ""
-    h2 = (ta.get("神情") or {}).get("卦象","") or ""
-    h3 = (ta.get("面相") or {}).get("卦象","") or "" 
+    # 组合卦
+    hexes = [(ta.get("姿态") or {}).get("卦象",""),
+             (ta.get("神情") or {}).get("卦象",""),
+             (ta.get("面容") or {}).get("卦象","")]
+    combo_title = " + ".join([h for h in hexes if h])
+    meta["combo_title"] = combo_title
 
-    # Load lexicon and synthesize
-    lex = load_lexicon()
-    combo_title = " + ".join([h for h in [h1,h2,h3] if h])
-    combo_summary = _synthesize_combo(lex, h1, h2, h3)
+    # 组合总结（易经式推演）
+    synthesized = _synthesize_combo(hexes, ta, traits)
+    one = (ta.get("总结") or out.get("summary","")).strip()
+    # 优先综合总结；如果空，再回退原总结
+    overview = synthesized or one
+    overview = overview.strip().rstrip("；;")
     meta["overview_card"] = {"title": f"🔮 卦象组合：{combo_title}" if combo_title else "🔮 卦象组合",
-                             "summary": combo_summary}
+                             "summary": overview}
 
-    doms = _make_domains(lex, h1, h2, h3)
-    meta["domains_status"] = {"事业": "\n".join(doms["career"]["status"]),
-                              "感情": "\n".join(doms["love"]["status"])}
-    meta["domains_suggestion"] = {"事业": "\n".join(doms["career"]["advice"]),
-                                  "感情": "\n".join(doms["love"]["advice"])}
-
-    # Headline
+    # headline
     try:
-        conf = float(out.get("confidence",0.0))
-    except Exception: conf = 0.0
-    meta["headline"] = {"tag": (out.get("archetype") or "").strip(), "confidence": conf}
+        out["confidence"] = float(out.get("confidence",0.0))
+    except Exception:
+        out["confidence"] = 0.0
+    arch = (out.get("archetype") or "").strip()
+    meta["headline"] = {"tag": arch, "confidence": out["confidence"]}
 
-    # Top-level clean
+    # 事业 / 感情：状态 + 建议
+    dd = meta.get("domains_detail") or {}
+    status = _insight_for_domains(hexes)
+    merged_status = {
+        "事业": _merge_status_and_detail(status.get("事业",""), dd.get("金钱与事业","")),
+        "感情": _merge_status_and_detail(status.get("感情",""), dd.get("配偶与感情","")),
+    }
+    meta["domains_status"] = merged_status
+    meta["domains_suggestion"] = {
+        "事业": _imperative_suggestion(dd.get("金钱与事业",""), hexes, "事业"),
+        "感情": _imperative_suggestion(dd.get("配偶与感情",""), hexes, "感情")
+    }
+
+    # 全局文本轻清理：去多余分号
     def _clean(s):
-        if not isinstance(s,str): return s
-        s = s.replace("——","，")
-        s = re.sub(r"[；;]+","；", s)
+        if not isinstance(s, str): return s
+        s = s.replace("——", "，")
+        s = re.sub(r"[；;]+", "；", s)
         s = re.sub(r"；([。！])", r"\1", s)
         s = re.sub(r"([。！？])；", r"\1", s)
-        s = _depronoun(s); s = _neutralize(s)
-        return _dedupe_smart(s)
+        return s
+
     out["summary"] = _clean(out.get("summary",""))
     out["archetype"] = _clean(out.get("archetype",""))
-    # deep clean meta
-    def _deep(x):
-        if isinstance(x, dict): return {k:_deep(v) for k,v in x.items()}
-        if isinstance(x, list): return [_deep(v) for v in x]
+
+    # 清理 meta 和 sections 内部的标点
+    def _deep_clean(x):
+        if isinstance(x, dict):
+            return {k:_deep_clean(v) for k,v in x.items()}
+        if isinstance(x, list):
+            return [_deep_clean(v) for v in x]
         return _clean(x)
-    out["meta"] = _deep(meta)
+
+    out["meta"] = _deep_clean(meta)
     return out
 
-# --- Routes ---
+# ---------------- routes ----------------
 @app.get("/health")
 def health(): return {"status":"ok"}
 
 @app.get("/", include_in_schema=False)
 def root():
     return HTMLResponse("<h3>Selfy AI</h3><a href='/docs'>/docs</a> · <a href='/mobile'>/mobile</a>")
+
+@app.head("/", include_in_schema=False)
+def root_head():
+    return Response(status_code=200)
 
 @app.get("/version")
 def version(): return {"runtime":RUNTIME_VERSION,"analysis":ANALYSIS_VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
@@ -397,11 +330,41 @@ def mobile():
         return HTMLResponse(f"<pre>index_mobile.html not found: {e}</pre>", status_code=500)
     return HTMLResponse(html)
 
+def _call_gpt(messages):
+    if client is None:
+        raise RuntimeError("OpenAI client not initialized")
+    return client.chat.completions.create(
+        model="gpt-4o",
+        temperature=0.4,
+        tools=_build_tools_schema(),
+        tool_choice={"type":"function","function":{"name":"submit_analysis_v3"}},
+        response_format={"type":"json_object"},
+        messages=messages
+    )
+
+def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
+    messages = _prompt_for_image_v372()
+    messages[-1]["content"] = [
+        {"type":"text","text":messages[-1]["content"]},
+        {"type":"image_url","image_url":{"url":data_url}}
+    ]
+    resp = _call_gpt(messages)
+    choice = resp.choices[0]
+    tool_calls = getattr(choice.message, "tool_calls", None)
+    if tool_calls:
+        args = json.loads(tool_calls[0].function.arguments)
+    else:
+        content = getattr(choice.message, "content", None)
+        if isinstance(content, str) and content.strip().startswith("{"):
+            args = json.loads(content)
+        else:
+            raise RuntimeError("Model did not return tool_calls.")
+    return {"tool_args": args, "oai_raw": resp if DEBUG else None}
+
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     try:
-        if client is None:
-            raise HTTPException(503, "OpenAI client not initialized")
+        if not file: raise HTTPException(400,"No file")
         ct = file.content_type or ""
         if not ct.startswith("image/"): raise HTTPException(415,f"Unsupported content type: {ct}")
         raw = await file.read()
@@ -411,32 +374,19 @@ async def upload(file: UploadFile = File(...)):
         data_url = _to_data_url(raw, ct)
         logger.info("[UPLOAD] %s %dB %s", file.filename, len(raw), ct)
 
-        # 1) 组装多模态消息（文本 + 图片）
-        msgs = _prompt_for_image_v372()
-        msgs[-1]["content"] = [
-            {"type":"text","text":msgs[-1]["content"]},
-            {"type":"image_url","image_url":{"url":data_url}}
-        ]
+        result = _call_gpt_tool_with_image(data_url)
+        tool_args = result["tool_args"]
+        final_out = _coerce_output(tool_args)
 
-        # 2) 调用 OpenAI（用正式参数，而不是 [...] 占位符）
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            messages=msgs,
-            response_format={"type": "json_object"},
-            tools=_build_tools_schema(),
-            tool_choice={"type": "function", "function": {"name": "submit_analysis_v3"}},
-            temperature=0.4,
-        )
+        if DEBUG:
+            meta = final_out.setdefault("meta",{}).setdefault("debug",{})
+            meta["file_info"]={"filename":file.filename,"content_type":ct,"size":len(raw)}
+            try:
+                meta["oai_choice_finish_reason"]=result["oai_raw"].choices[0].finish_reason
+            except Exception:
+                meta["oai_choice_finish_reason"]="n/a"
 
-        # 3) 解析 + 合成后处理
-        raw_payload = extract_selfy_payload(resp)
-        if not raw_payload:
-            logging.error("[UPLOAD] Empty payload after extraction")
-            return JSONResponse({"error": "empty_payload", "tip": "enable DEBUG=1 to log raw shapes"}, status_code=502)
-
-        final_payload = _coerce_output(raw_payload)
-        return JSONResponse(final_payload)
-
+        return JSONResponse(content=final_out, status_code=200)
     except HTTPException as he:
         if DEBUG:
             return JSONResponse(status_code=he.status_code, content={"error":he.detail,"debug":{"trace":traceback.format_exc()}})
