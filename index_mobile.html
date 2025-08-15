@@ -1,178 +1,229 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Selfy AI Mobile · 结果展示</title>
-<style>
-  :root{--bg:#0b0f14;--panel:#111826;--fg:#e8eef7;--muted:#9fb3c8;--acc:#66a6ff;--line:#1f2937}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-  header{padding:16px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(102,166,255,.08),transparent)}
-  main{padding:16px;max-width:1080px;margin:auto}
-  .grid{display:grid;grid-template-columns:1fr;gap:12px}
-  @media(min-width:900px){.grid{grid-template-columns:360px 1fr}}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;box-shadow:0 6px 18px rgba(0,0,0,.25)}
-  h1{font-size:20px;margin:0} h2{font-size:18px;margin:8px 0 8px}
-  p{color:var(--muted);margin:.25rem 0 .75rem}
-  code{background:#0f172a;padding:2px 6px;border-radius:6px;color:#cbd5e1}
-  input[type=file]{width:100%;color:var(--fg)}
-  button{padding:10px 14px;border-radius:10px;border:1px solid var(--line);background:#0f172a;color:var(--fg);cursor:pointer}
-  button.primary{background:linear-gradient(135deg,#3b82f6,#06b6d4);border:none}
-  .row{display:flex;gap:10px;align-items:center}
-  .kv{display:grid;grid-template-columns:120px 1fr;gap:6px 12px}
-  .tag{display:inline-block;background:#0f172a;border:1px solid var(--line);padding:2px 8px;border-radius:999px;font-size:12px;margin-right:6px}
-  .muted{color:var(--muted)}
-  table{width:100%;border-collapse:collapse}
-  th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;font-size:14px}
-  .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
-  details{background:#0f172a;border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:8px}
-  .ok{color:#10b981}.warn{color:#f59e0b}.err{color:#ef4444}
-</style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Selfy AI（移动版）</title>
+  <style>
+    :root { --bg:#0b0b0f; --card:#12121a; --muted:#8a8fa3; --text:#e9ebf1; --brand:#7aa2ff; --line: rgba(255,255,255,0.08); }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:14px 16px; position:sticky; top:0; background:linear-gradient(180deg,#0b0b0f,rgba(11,11,15,0.6)); backdrop-filter: blur(6px); border-bottom:1px solid rgba(255,255,255,0.06); z-index:10; }
+    h1 { font-size:18px; margin:0; letter-spacing: .5px; }
+    main { padding:14px 16px 32px; max-width:720px; margin:0 auto; }
+    .uploader { display:flex; gap:10px; align-items:center; margin:10px 0 18px; }
+    input[type=file] { display:none }
+    .btn { background:#1a1b25; color:#e9ebf1; padding:10px 14px; border-radius:12px; border:1px solid var(--line); font-size:14px; }
+    .btn:active { transform: scale(.98) }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:14px; margin:12px 0; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+    .title { font-weight:700; margin-bottom:8px; font-size:15px; }
+    .muted { color: var(--muted); font-size:13px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .kv { display:flex; gap:8px; font-size:14px; line-height:1.5; }
+    .kv b { width:64px; color:#aeb6d9 }
+    .bullets { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .pill { background:#161722; border:1px solid var(--line); padding:6px 8px; border-radius:999px; font-size:12px; color:#c9d1ff }
+    .hr { height:1px; background:rgba(255,255,255,0.06); margin:10px -14px; }
+    .loading { opacity:.7 }
+    img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid var(--line); }
+    table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); font-size:13px; }
+    .tag { display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid var(--line); background:#0f1120; color:#c9d1ff; font-size:12px; margin-right:6px; }
+    details { background:#0f1120; border:1px solid var(--line); border-radius:12px; padding:10px; }
+    details summary { cursor:pointer }
+  </style>
 </head>
 <body>
   <header>
-    <h1>Selfy AI Mobile</h1>
-    <p class="muted">上传图片 → 调用 <code>POST /upload</code> → 结构化展示 + 原始 JSON</p>
+    <h1>Selfy AI（移动版）</h1>
   </header>
-  <main class="grid">
-    <div class="card">
-      <h2>上传图片</h2>
-      <p>选择文件后点击 <b>分析</b>。支持手机相册。</p>
-      <div class="row">
-        <input id="file" type="file" accept="image/*">
-        <button id="btn" class="primary">分析</button>
-      </div>
-      <details style="margin-top:12px">
-        <summary>高级选项</summary>
-        <label><input type="checkbox" id="rawOnly"> 仅显示原始 JSON（不做渲染）</label><br>
-        <label><input type="checkbox" id="pretty"> JSON 美化显示</label>
-      </details>
-      <div id="status" class="muted" style="margin-top:8px"></div>
+  <main>
+    <div class="uploader">
+      <label class="btn" for="file">选择图片</label>
+      <input id="file" type="file" accept="image/*" />
+      <button id="shot" class="btn">拍照</button>
+      <button id="demo" class="btn">示例JSON</button>
     </div>
+    <img id="preview" class="preview" style="display:none"/>
 
-    <div class="card">
-      <h2>结果</h2>
-      <div id="view"></div>
-      <details>
-        <summary>原始 JSON</summary>
-        <pre id="raw" class="mono">{ 提交图片后显示结果 }</pre>
-      </details>
-    </div>
+    <div id="out"></div>
   </main>
 
-<script>
-const el = s=>document.querySelector(s);
-const pretty = obj=>JSON.stringify(obj,null, el('#pretty').checked?2:0);
+  <script>
+  const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
 
-function render(data){
-  const v = el('#view');
-  v.innerHTML = '';
-  if(!data || typeof data !== 'object'){ v.innerHTML='<p class="err">解析失败</p>'; return; }
-  const meta = data.meta || {};
-  const yi = meta.yi || {};
-  const sec = data.sections || {};
-  const doms = meta.domains_status || {};
-  const tips = meta.domains_suggestion || {};
-  const faces = (meta.face_parts && typeof meta.face_parts==='object')? meta.face_parts : {};
+  const fileInput = document.getElementById('file');
+  const shotBtn = document.getElementById('shot');
+  const demoBtn = document.getElementById('demo');
+  const out = document.getElementById('out');
+  const preview = document.getElementById('preview');
 
-  // 顶部摘要
-  v.insertAdjacentHTML('beforeend', `
-    <div class="kv" style="margin-bottom:12px">
-      <div>Summary</div><div>${escapeHtml(data.summary||'')}</div>
-      <div>Archetype</div><div><span class="tag">${escapeHtml(data.archetype||'-')}</span></div>
-      <div>Confidence</div><div>${typeof data.confidence==='number'? data.confidence.toFixed(2):'-'}</div>
-      <div>Domains</div><div>${(data.domains||[]).map(x=>'<span class="tag">'+escapeHtml(x)+'</span>').join(' ')}</div>
-    </div>
-  `);
+  shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
+  document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
 
-  // 三象
-  v.insertAdjacentHTML('beforeend', `
-    <h3>三象解读</h3>
-    <div class="kv">
-      <div>姿态</div><div>${escapeHtml(sec['姿态']||'-')}</div>
-      <div>神情</div><div>${escapeHtml(sec['神情']||'-')}</div>
-      <div>面相</div><div>${escapeHtml(sec['面相']||'-')}</div>
-    </div>
-  `);
+  demoBtn.addEventListener('click', () => {
+    // Minimal demo payload to test UI without hitting backend
+    const demo = {
+      summary: "整体显得自信且温和，表达清晰。",
+      archetype: "明断果决",
+      confidence: 0.86,
+      sections: { "姿态":"站姿稳定，重心落点明确。", "神情":"视线专注，有回应意识。", "面相":"五官均衡，线条利落。" },
+      domains:["金钱与事业","配偶与感情"],
+      meta:{
+        six_yao:[
+          {feature:"下巴",position:1,score:70,yin_yang:"阳",moving:false},
+          {feature:"嘴",position:2,score:62,yin_yang:"阳",moving:false},
+          {feature:"鼻",position:3,score:40,yin_yang:"阴",moving:false},
+          {feature:"颧",position:4,score:30,yin_yang:"阴",moving:false},
+          {feature:"眼",position:5,score:68,yin_yang:"阳",moving:false},
+          {feature:"眉",position:6,score:90,yin_yang:"阳",moving:true}
+        ],
+        yi:{
+          trigrams:{ upper:{code:5,name:"离"}, lower:{code:4,name:"艮"} },
+          hexagram:{ king_wen_no:56, name:"火山旅", moving_lines:[6] },
+          derived_hexagram:{ king_wen_no:22, name:"山火贲" }
+        },
+        domains_detail:{
+          "金钱与事业":"当前节奏稳定，可在既有流程上做小幅提效；把目标拆解并以周为单位跟踪。",
+          "配偶与感情":"沟通顺畅但节奏略快，留些回话时间给对方；减少假设，多确认。"
+        },
+        face_parts:{
+          "眉": {"特征":"略挑","卦象":"离","解读":"判断快，容易先想后说"},
+          "眼": {"特征":"聚焦","卦象":"坎","解读":"重信息与证据"},
+          "鼻": {"特征":"挺直","卦象":"艮","解读":"边界分明"},
+          "嘴": {"特征":"线条清晰","卦象":"兑","解读":"表达愿望明确"},
+          "下巴": {"特征":"轮廓稳","卦象":"乾","解读":"执行力足"}
+        }
+      }
+    };
+    render(demo);
+  });
 
-  // 六爻表
-  const six = (meta.six_yao||[]).slice().sort((a,b)=>(a.position||0)-(b.position||0));
-  if(six.length){
-    v.insertAdjacentHTML('beforeend', `<h3 style="margin-top:14px">六爻</h3>
-      <table><thead><tr><th>位</th><th>部位</th><th>阴阳</th><th>动爻</th><th>分值</th></tr></thead>
-      <tbody>${six.map(r=>'<tr><td>'+safe(r.position)+'</td><td>'+escapeHtml(r.feature||'')+'</td><td>'+escapeHtml(r.yin_yang||'')+'</td><td>'+ (r.moving?'✅':'') +'</td><td>'+safe(r.score)+'</td></tr>').join('')}</tbody></table>`);
-  }
+  fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    preview.src = url; preview.style.display = 'block';
+    out.innerHTML = '<div class="card loading">分析中…</div>';
 
-  // 卦象
-  if(yi.trigrams || yi.hexagram){
-    v.insertAdjacentHTML('beforeend', `<h3 style="margin-top:14px">卦象</h3>`);
-    if(yi.trigrams){
-      const u = yi.trigrams.upper||{}, l = yi.trigrams.lower||{};
-      v.insertAdjacentHTML('beforeend', `<p>上卦：<span class="tag">${escapeHtml(u.name||'-')}</span>　下卦：<span class="tag">${escapeHtml(l.name||'-')}</span></p>`);
+    const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      const text = await r.text();
+      try {
+        const data = JSON.parse(text);
+        render(data);
+      } catch(parseErr){
+        out.innerHTML = `<div class="card">返回非 JSON：<details><summary>展开</summary><pre>${escapeHtml(text)}</pre></details></div>`;
+      }
+    } catch (err) {
+      out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
     }
-    if(yi.hexagram){
-      v.insertAdjacentHTML('beforeend', `<div class="kv">
-        <div>本卦</div><div>#${safe(yi.hexagram.king_wen_no)} ${escapeHtml(yi.hexagram.name||'')}</div>
-        <div>动爻</div><div>${Array.isArray(yi.hexagram.moving_lines)? yi.hexagram.moving_lines.join(', '): '-'}</div>
-      </div>`);
+  });
+
+  function pct(n){ try{ return Math.round((n||0)*100); }catch(e){ return 0; } }
+
+  function render(d){
+    const sec = d.sections || {};
+    const meta = d.meta || {};
+    const yi = meta.yi || {};
+    const cb = meta.confidence_breakdown || {};
+    const domDetail = meta.domains_detail || {};
+    const domStatus = meta.domains_status || {}; // 新版
+    const domSugList = meta.domains_suggestion_list || {}; // 新版
+    const faceParts = meta.face_parts || {};
+
+    const headline = `
+      <div class="card">
+        <div class="title">Selfy AI</div>
+        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
+        <div class="muted">可信度 ${pct(d.confidence)}% · 维度：
+          图像清晰度 ${pct(cb['图像清晰度']||0)}%
+          ${cb['卦象一致性']!=null? '｜卦象一致性 '+pct(cb['卦象一致性'])+'%':''}
+          ${cb['特征显著性']!=null? '｜特征显著性 '+pct(cb['特征显著性'])+'%':''}
+        </div>
+        <div class="hr"></div>
+        <div class="kv"><b>Summary</b><span>${escapeHtml(d.summary||'—')}</span></div>
+        <div class="kv"><b>Domains</b><span>${(d.domains||[]).map(x=>'<span class="tag">'+escapeHtml(x)+'</span>').join(' ')}</span></div>
+      </div>`;
+
+    function triCard(name, key){
+      return `<div class="card"><div class="title">${name}</div>
+        <div class="kv"><b>解读</b><span>${escapeHtml(sec[key]||'—')}</span></div>
+      </div>`;
     }
-    if(yi.derived_hexagram){
-      v.insertAdjacentHTML('beforeend', `<div class="kv">
-        <div>之卦</div><div>#${safe(yi.derived_hexagram.king_wen_no)} ${escapeHtml(yi.derived_hexagram.name||'')}</div>
-      </div>`);
+    const tri = `
+      <div class="grid">
+        ${triCard('🧍 姿态','姿态')}
+        ${triCard('🙂 神情','神情')}
+        ${triCard('👤 面相','面相')}
+      </div>`;
+
+    // 六爻表
+    let sixTable = '';
+    const six = Array.isArray(meta.six_yao)? meta.six_yao.slice().sort((a,b)=>(a.position||0)-(b.position||0)) : [];
+    if(six.length){
+      sixTable = `<div class="card"><div class="title">六爻</div>
+        <table><thead><tr><th>位</th><th>部位</th><th>阴阳</th><th>动爻</th><th>分值</th></tr></thead>
+        <tbody>${six.map(r=>'<tr><td>'+safe(r.position)+'</td><td>'+escapeHtml(r.feature||'')+'</td><td>'+escapeHtml(r.yin_yang||'')+'</td><td>'+(r.moving?'✅':'')+'</td><td>'+safe(r.score)+'</td></tr>').join('')}</tbody>
+        </table></div>`;
     }
-  }
 
-  // 领域建议
-  if(doms['事业'] || doms['感情'] || tips['事业'] || tips['感情']){
-    v.insertAdjacentHTML('beforeend', `<h3 style="margin-top:14px">领域建议</h3>`);
-    if(doms['事业'] || tips['事业']) v.insertAdjacentHTML('beforeend', `<p><b>事业：</b>${escapeHtml((doms['事业']||'') + (tips['事业']? '；'+tips['事业'] : ''))}</p>`);
-    if(doms['感情'] || tips['感情']) v.insertAdjacentHTML('beforeend', `<p><b>感情：</b>${escapeHtml((doms['感情']||'') + (tips['感情']? '；'+tips['感情'] : ''))}</p>`);
-  }
-
-  // 五官
-  const faceKeys = Object.keys(faces);
-  if(faceKeys.length){
-    v.insertAdjacentHTML('beforeend', `<h3 style="margin-top:14px">五官细节</h3>`);
-    let rows = '';
-    faceKeys.forEach(k=>{
-      const it = faces[k]||{};
-      rows += '<tr><td>'+escapeHtml(k)+'</td><td>'+escapeHtml(it['特征']||'')+'</td><td>'+escapeHtml(it['卦象']||'')+'</td><td>'+escapeHtml(it['解读']||'')+'</td></tr>';
-    });
-    v.insertAdjacentHTML('beforeend', `<table><thead><tr><th>部位</th><th>特征</th><th>卦象</th><th>解读</th></tr></thead><tbody>${rows}</tbody></table>`);
-  }
-}
-
-function safe(v){ return (v===0 || !!v)? String(v): '-'; }
-function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
-
-async function doUpload(){
-  const btn = el('#btn'); const out = el('#raw'); const view = el('#view'); const stat = el('#status');
-  const f = el('#file').files[0];
-  if(!f){ alert('请选择图片'); return; }
-  btn.disabled = true; btn.textContent = '处理中...'; stat.textContent = '';
-  try{
-    const fd = new FormData(); fd.append('file', f);
-    const res = await fetch('/upload', { method:'POST', body: fd });
-    const txt = await res.text();
-    out.textContent = txt;
-    if(el('#rawOnly').checked){ view.innerHTML = '<p class="warn">原始 JSON 模式已开启，不做渲染。</p>'; }
-    else{
-      try{ const json = JSON.parse(txt); render(json); }
-      catch(e){ view.innerHTML = '<p class="err">JSON 解析失败：'+e.message+'</p>'; }
+    // 卦象区域
+    let yiCard = '';
+    if(yi.trigrams || yi.hexagram){
+      const u = yi.trigrams?.upper || {}, l = yi.trigrams?.lower || {};
+      yiCard = `<div class="card"><div class="title">卦象</div>
+        <div class="kv"><b>上卦</b><span>${escapeHtml(u.name||'-')}</span></div>
+        <div class="kv"><b>下卦</b><span>${escapeHtml(l.name||'-')}</span></div>
+        ${yi.hexagram? `<div class="kv"><b>本卦</b><span>#${safe(yi.hexagram.king_wen_no)} ${escapeHtml(yi.hexagram.name||'')}</span></div>`:''}
+        ${Array.isArray(yi.hexagram?.moving_lines)? `<div class="kv"><b>动爻</b><span>${yi.hexagram.moving_lines.join(', ')||'-'}</span></div>`:''}
+        ${yi.derived_hexagram? `<div class="kv"><b>之卦</b><span>#${safe(yi.derived_hexagram.king_wen_no)} ${escapeHtml(yi.derived_hexagram.name||'')}</span></div>`:''}
+      </div>`;
     }
-    stat.textContent = res.ok ? '✅ 成功' : ('❌ ' + res.status);
-  }catch(err){
-    view.innerHTML = '<p class="err">请求出错：'+err.message+'</p>';
-    out.textContent = String(err);
-    stat.textContent = '❌ 出错';
-  }finally{
-    btn.disabled = false; btn.textContent = '分析';
-  }
-}
 
-document.addEventListener('click', e=>{ if(e.target && e.target.id==='btn') doUpload(); });
-</script>
+    // 领域：将新版字段组装成 pill 列表
+    function toPills(text){
+      if(!text) return [];
+      const parts = String(text).split(/[；;。]/).map(s=>s.trim()).filter(Boolean);
+      return parts.slice(0,6);
+    }
+    const domCards = (()=>{
+      const cards = [];
+      const bizText = (domStatus['事业']? domStatus['事业'] + '；' : '') + (meta.domains_suggestion?.['事业']||'');
+      const relText = (domStatus['感情']? domStatus['感情'] + '；' : '') + (meta.domains_suggestion?.['感情']||'');
+      const biz = toPills(bizText || domDetail['金钱与事业']);
+      const rel = toPills(relText || domDetail['配偶与感情']);
+      if(biz.length) cards.push(cardBullets('💼 事业｜近期要点', biz));
+      if(rel.length) cards.push(cardBullets('💗 感情｜近期要点', rel));
+      return cards.join('');
+    })();
+
+    // 五官细节
+    let faceCard = '';
+    const keys = Object.keys(faceParts||{});
+    if(keys.length){
+      faceCard = '<div class="card"><div class="title">五官细节</div><table><thead><tr><th>部位</th><th>特征</th><th>卦象</th><th>解读</th></tr></thead><tbody>'
+        + keys.map(k=>{
+          const it = faceParts[k]||{};
+          return '<tr><td>'+escapeHtml(k)+'</td><td>'+escapeHtml(it['特征']||'')+'</td><td>'+escapeHtml(it['卦象']||'')+'</td><td>'+escapeHtml(it['解读']||'')+'</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    // 原始 JSON
+    const raw = `<details class="card"><summary>原始 JSON</summary><pre style="white-space:pre-wrap">${escapeHtml(JSON.stringify(d,null,2))}</pre></details>`;
+
+    out.innerHTML = headline + tri + yiCard + sixTable + domCards + faceCard + raw;
+  }
+
+  function cardBullets(title, items){
+    return `<div class="card"><div class="title">${title}</div><div class="bullets">${
+      items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')
+    }</div></div>`;
+  }
+
+  function safe(v){ return (v===0 || !!v)? String(v): '-'; }
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",""":"&quot;","'":"&#39;"}[c])); }
+  </script>
 </body>
 </html>
