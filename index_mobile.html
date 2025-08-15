@@ -147,6 +147,13 @@
   }
 
   function render(d){
+  function cardBullets(title, items){
+    return `<div class="card"><div class="title">${title}</div>
+      <div class="bullets">${
+        items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')
+      }</div></div>`;
+  }
+
     const sec = d.sections || {};
     const meta = d.meta || {};
     const yi = meta.yi || {};
