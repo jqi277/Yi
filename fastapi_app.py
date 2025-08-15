@@ -239,6 +239,32 @@ def root_head():
     return Response(status_code=200)
 
 @app.get("/version")
+
+@app.get("/mobile", include_in_schema=False)
+def mobile():
+    import os
+    from fastapi.responses import HTMLResponse
+    path = os.path.join(os.path.dirname(__file__), "index_mobile.html")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+    except Exception:
+        html = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Selfy AI Mobile</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;padding:16px;line-height:1.5}code{background:#f5f5f5;padding:2px 4px;border-radius:4px}</style>
+</head><body>
+<h2>Selfy AI Mobile</h2>
+<p>这是默认的移动端占位页。你可以在项目根目录放置 <code>index_mobile.html</code> 来覆盖本页。</p>
+<p>API:</p>
+<ul>
+  <li><code>GET /health</code></li>
+  <li><code>GET /version</code></li>
+  <li><code>POST /upload</code> (multipart/form-data, <code>file</code>=image)</li>
+</ul>
+</body></html>"""
+    return HTMLResponse(html)
+
 def version(): return {"runtime":RUNTIME_VERSION,"analysis":ANALYSIS_VERSION,"schema":SCHEMA_ID,"debug":DEBUG}
 
 def _call_gpt_tool_with_image(data_url: str) -> Dict[str,Any]:
