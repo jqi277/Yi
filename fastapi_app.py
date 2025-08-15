@@ -126,7 +126,7 @@ sys = (
   + _json_hint()
     )
 user = "请对输入人像进行AI主导的易经观相分析，并严格以JSON通过工具函数submit_analysis_v3返回，缺任何必需字段视为不合格输出。"
-    return [{"role":"system","content":sys},{"role":"user","content":user}]
+return [{"role":"system","content":sys},{"role":"user","content":user}]
 
 # ----------------- 轻度清洗 / 兜底 -----------------
 
