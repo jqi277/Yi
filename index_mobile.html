@@ -126,13 +126,17 @@
     const text = String(oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
     const combo = `<div class="card"><div class="title">${escapeHtml(oc.title||'八卦类比')}</div><div style="font-size:14px;line-height:1.6">${text}</div></div>`;
 
-    const pills = (title, items)=> !items?.length ? '' :
-      `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`;
-
-    const doms = d.meta?.domains_status_list || {};
+    const domTxt = d.meta?.domains_status_text || {};
+    const domSug = d.meta?.domains_suggestion_text || {};
+    const paraCard = (title, text, sub) => {
+      const subline = sub ? `<div class="muted" style="margin-top:6px">${escapeHtml(sub)}</div>` : '';
+      return `<div class="card"><div class="title">${title}</div><div style="font-size:14px;line-height:1.7">${escapeHtml(text||'—')}</div>${subline}</div>`;
+    };
+    
     out.innerHTML = headline + tri + combo +
-                    pills('💼 事业｜近期要点', doms['事业']) +
-                    pills('💗 感情｜近期要点', doms['感情']);
+      paraCard('💼 事业｜近期状态', domTxt['事业'], domSug['事业'] ? '建议：' + domSug['事业'] : '') +
+      paraCard('💗 感情｜近期状态', domTxt['感情'], domSug['感情'] ? '建议：' + domSug['感情'] : '');
+
   }
   </script>
 </body>
