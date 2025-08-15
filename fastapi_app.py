@@ -115,22 +115,28 @@ def _canon_key(s: str) -> str:
     return k
 
 def _dedupe_smart(s: str) -> str:
-    if not isinstance(s, str): return s
+    if not isinstance(s, str):
+        return s
     s = s.strip("。；，,; ")
     sentences = re.split(r"[。！？]", s)
     clean = []
     for sen in sentences:
-        sen = sen.strip("，,;； "); if not sen: continue
+        sen = sen.strip("，,;； ")
+        if not sen:
+            continue
         parts = re.split(r"[，,；;]", sen)
         seen, kept = set(), []
         for p in parts:
-            t = p.strip(); 
-            if not t: continue
+            t = p.strip()
+            if not t:
+                continue
             ck = _canon_key(t)
             if ck and ck not in seen:
-                seen.add(ck); kept.append(t)
-        clean.append("，".join(kept))
-    return "。".join(clean) + "。"
+                seen.add(ck)
+                kept.append(t)
+        if kept:
+            clean.append("，".join(kept))
+    return ("。".join(clean) + "。") if clean else ""
 
 def _strip_domain_lead(s: str) -> str:
     if not isinstance(s, str): return s
