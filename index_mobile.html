@@ -142,15 +142,17 @@
     const domsDetail = d.meta?.domains_detail || {};
     const domBiz = domsList['事业'] || bulletsFromText(domsDetail['金钱与事业']);
     const domLove = domsList['感情'] || bulletsFromText(domsDetail['配偶与感情']);
-
+    const domSocial = domsList['人际关系'] || bulletsFromText(domsDetail['人际关系']);
+    
     const statusCard = (title, items)=>{
       if (!items || !items.length) return '';
       return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
     }
 
     out.innerHTML = headline + tri + combo + fpHtml +
-                    statusCard('💼 事业｜近期要点', domBiz) +
-                    statusCard('💗 感情｜近期要点', domLove);
+                statusCard('💼 事业｜近期要点', domBiz) +
+                statusCard('💗 感情｜近期要点', domLove) +
+                statusCard('🤝 人际关系｜近期要点', domSocial);
   }
 
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
