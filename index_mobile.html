@@ -1,104 +1,127 @@
-<script>
-const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Selfy AI（移动版）</title>
+  <style>
+    :root { --bg:#0b0b0f; --card:#12121a; --muted:#8a8fa3; --text:#e9ebf1; --brand:#7aa2ff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:14px 16px; position:sticky; top:0; background:linear-gradient(180deg,#0b0b0f,rgba(11,11,15,0.6)); backdrop-filter: blur(6px); border-bottom:1px solid rgba(255,255,255,0.06); z-index:10; }
+    h1 { font-size:18px; margin:0; letter-spacing: .5px; }
+    main { padding:14px 16px 32px; max-width:720px; margin:0 auto; }
+    .uploader { display:flex; gap:10px; align-items:center; margin:10px 0 18px; }
+    input[type=file] { display:none }
+    .btn { background:#1a1b25; color:#e9ebf1; padding:10px 14px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); font-size:14px; }
+    .btn:active { transform: scale(.98) }
+    .card { background:var(--card); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:14px; margin:12px 0; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+    .title { font-weight:700; margin-bottom:8px; font-size:15px; }
+    .muted { color: var(--muted); font-size:13px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .kv { display:flex; gap:8px; font-size:14px; line-height:1.5; }
+    .kv b { width:64px; color:#aeb6d9 }
+    .bullets { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .pill { background:#161722; border:1px solid rgba(255,255,255,0.08); padding:6px 8px; border-radius:999px; font-size:12px; color:#c9d1ff }
+    .hr { height:1px; background:rgba(255,255,255,0.06); margin:10px -14px; }
+    .loading { opacity:.7 }
+    img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid rgba(255,255,255,0.08); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Selfy AI（移动版）</h1>
+  </header>
+  <main>
+    <div class="uploader">
+      <label class="btn" for="file">选择图片</label>
+      <input id="file" type="file" accept="image/*" />
+      <button id="shot" class="btn">拍照</button>
+    </div>
+    <img id="preview" class="preview" style="display:none"/>
 
-const fileInput = document.getElementById('file');
-const shotBtn = document.getElementById('shot');
-const out = document.getElementById('out');
-const preview = document.getElementById('preview');
+    <div id="out"></div>
+  </main>
 
-shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
-document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
+  <script>
+  const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
 
-fileInput.addEventListener('change', async (e) => {
-  const f = e.target.files[0];
-  if (!f) return;
-  const url = URL.createObjectURL(f);
-  preview.src = url; preview.style.display = 'block';
-  out.innerHTML = '<div class="card loading">分析中…</div>';
+  const fileInput = document.getElementById('file');
+  const shotBtn = document.getElementById('shot');
+  const out = document.getElementById('out');
+  const preview = document.getElementById('preview');
 
-  const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
-  try {
-    const r = await fetch('/upload', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error('HTTP '+r.status);
-    const data = await r.json();
-    render(data);
-  } catch (err) {
-    out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
-  }
-});
+  shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
+  document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
 
-function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
-function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    preview.src = url; preview.style.display = 'block';
+    out.innerHTML = '<div class="card loading">分析中…</div>';
 
-function render(d){
-  const ta   = d.meta?.triple_analysis || {};
-  const cb   = d.meta?.confidence_breakdown || {};
-  const fps  = d.meta?.face_parts || {};
-  const stat = d.meta?.domains_status_text || {};
-  const sugg = d.meta?.domains_suggestion_text || {};
-
-  // 头卡：只露出“图片清晰度”
-  const headline = `
-    <div class="card">
-      <div class="title">Selfy AI</div>
-      <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
-      <div class="muted">图片清晰度 ${pct(cb['图像清晰度']||0)}%</div>
-    </div>`;
-
-  function triCard(name, key){
-    const o = ta[key] || {};
-    let hex = o['卦象'] || '';
-    // 面相缺卦时由后端已回填，不再前端推断
-    const sym = SYMBOLS[hex]||'';
-    const rows = [
-      `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
-      `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
-    ];
-    if (o['经文提示']) rows.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
-
-    // 在【面相】卡片内嵌“六官细节”（爻级别）
-    if (key === '面容' && fps && Object.keys(fps).length){
-      const items = Object.entries(fps).map(([part, info])=>{
-        const f = info?.['特征'] || '';
-        const h = (info?.['卦象'] || '').trim();
-        const hs = h ? `${h}卦（${SYMBOLS[h]||''}）` : '—';
-        const e = info?.['解读'] || '';
-        return `<div class="kv"><b>${escapeHtml(part)}</b><span>${escapeHtml(f)}｜${hs}｜${escapeHtml(e)}</span></div>`;
-      }).join('');
-      rows.push(`<div class="hr"></div>` + items);
+    const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const data = await r.json();
+      render(data);
+    } catch (err) {
+      out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
     }
-    return `<div class="card"><div class="title">${name}</div>${rows.join('')}</div>`;
+  });
+
+  function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
+
+  function render(d){
+    const ta = d.meta?.triple_analysis || {};
+    const cb = d.meta?.confidence_breakdown || {};
+
+    const headline = `
+      <div class="card">
+        <div class="title">Selfy AI</div>
+        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
+        <div class="muted">可信度 ${pct(d.confidence||0)}% · 拆解：
+          图像清晰度 ${pct(cb['图像清晰度']||0)}%｜卦象一致性 ${pct(cb['卦象一致性']||0)}%｜特征显著性 ${pct(cb['特征显著性']||0)}%
+        </div>
+      </div>`;
+
+    function triCard(name, key){
+      const o = ta[key] || {}; const hex = o['卦象'] || ''; const sym = SYMBOLS[hex]||'';
+      const lines = [
+        `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
+        `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
+      ];
+      if (o['经文提示']) lines.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
+      return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
+    }
+
+    const tri = `
+      <div class="grid">
+        ${triCard('🧍 姿态','姿态')}
+        ${triCard('🙂 神情','神情')}
+        ${triCard('👤 面相','面容')}
+      </div>`;
+
+    const combo = (()=>{
+      const oc = d.meta?.overview_card || {}; const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
+      return `<div class="card"><div class="title">${escapeHtml(oc.title||'三才之道')}</div><div style="font-size:14px;line-height:1.6">${text}</div></div>`;
+    })();
+
+    const statusCard = (title, items)=>{
+      if (!items || !items.length) return '';
+      return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
+    }
+
+    const doms = d.meta?.domains_status_list || {};
+
+    out.innerHTML = headline + tri + combo +
+                    statusCard('💼 事业｜近期要点', doms['事业']) +
+                    statusCard('💗 感情｜近期要点', doms['感情']);
   }
 
-  // 三分象一行（上传后显示）
-  const tri = `
-    <div class="grid">
-      ${triCard('🧍 姿态','姿态')}
-      ${triCard('🙂 神情','神情')}
-      ${triCard('👤 面相','面容')}
-    </div>`;
-
-  // 八卦类比（文本换行）
-  const combo = (()=>{
-    const oc = d.meta?.overview_card || {};
-    const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
-    return `<div class="card"><div class="title">${escapeHtml(oc.title||'八卦类比')}</div><div class="para">${text}</div></div>`;
-  })();
-
-  // 事业/感情：句子版（去掉 pills）
-  const domCards = (titleKey, s, g) => {
-    const sTxt = (s||'').trim();
-    const gTxt = (g||'').trim();
-    if (!sTxt && !gTxt) return '';
-    return `<div class="card">
-      <div class="title">${titleKey}</div>
-      ${sTxt ? `<div class="kv"><b>近期状态</b><span>${escapeHtml(sTxt)}</span></div>` : ''}
-      ${gTxt ? `<div class="kv"><b>建议</b><span>${escapeHtml(gTxt)}</span></div>` : ''}
-    </div>`;
-  };
-
-  out.innerHTML = headline + tri + combo +
-                  domCards('💼 事业', stat['事业'], sugg['事业']) +
-                  domCards('💗 感情', stat['感情'], sugg['感情']);
-}
-</script>
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  </script>
+</body>
+</html>
