@@ -7,168 +7,121 @@
   <style>
     :root { --bg:#0b0b0f; --card:#12121a; --muted:#8a8fa3; --text:#e9ebf1; --brand:#7aa2ff; }
     * { box-sizing: border-box; }
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft Yahei",system-ui,sans-serif; background:var(--bg); color:var(--text); }
-    header { padding:14px 16px; position:sticky; top:0; background:linear-gradient(180deg,#0b0b0f,rgba(11,11,15,.6)); backdrop-filter:blur(6px); border-bottom:1px solid rgba(255,255,255,.06); z-index:10; }
-    h1 { font-size:18px; margin:0; letter-spacing:.5px; }
+    body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft Yahei", system-ui, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:14px 16px; position:sticky; top:0; background:linear-gradient(180deg,#0b0b0f,rgba(11,11,15,0.6)); backdrop-filter: blur(6px); border-bottom:1px solid rgba(255,255,255,0.06); z-index:10; }
+    h1 { font-size:18px; margin:0; letter-spacing: .5px; }
     main { padding:14px 16px 32px; max-width:720px; margin:0 auto; }
-    /* —— Uploader —— */
     .uploader { display:flex; gap:10px; align-items:center; margin:10px 0 18px; }
-    input[type=file]{ display:none; } /* 只保留一处 input，避免重复按钮 */
-    .btn { background:#1a1b25; color:#e9ebf1; padding:10px 14px; border-radius:12px; border:1px solid rgba(255,255,255,.1); font-size:14px; cursor:pointer; }
-    .btn:active { transform:scale(.98) }
-
-    /* —— Cards —— */
-    .card { background:var(--card); border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:14px; margin:12px 0; box-shadow:0 6px 18px rgba(0,0,0,.25); }
+    input[type=file] { display:none }
+    .btn { background:#1a1b25; color:#e9ebf1; padding:10px 14px; border-radius:12px; border:1px solid rgba(255,255,255,0.1); font-size:14px; }
+    .btn:active { transform: scale(.98) }
+    .card { background:var(--card); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:14px; margin:12px 0; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
     .title { font-weight:700; margin-bottom:8px; font-size:15px; }
-    .muted { color:var(--muted); font-size:13px; }
-    .kv { display:flex; gap:8px; font-size:14px; line-height:1.5; align-items:flex-start; }
-    .kv b { width:64px; color:#aeb6d9; flex-shrink:0; }
-    .hr { height:1px; background:rgba(255,255,255,.06); margin:10px -14px; }
+    .muted { color: var(--muted); font-size:13px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .kv { display:flex; gap:8px; font-size:14px; line-height:1.5; }
+    .kv b { width:64px; color:#aeb6d9 }
     .bullets { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-    .pill { background:#161722; border:1px solid rgba(255,255,255,.08); padding:6px 8px; border-radius:999px; font-size:12px; color:#c9d1ff }
+    .pill { background:#161722; border:1px solid rgba(255,255,255,0.08); padding:6px 8px; border-radius:999px; font-size:12px; color:#c9d1ff }
+    .hr { height:1px; background:rgba(255,255,255,0.06); margin:10px -14px; }
     .loading { opacity:.7 }
-
-    /* 图片预览 */
-    img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid rgba(255,255,255,.08); display:none; }
-
-    /* 三分象：默认纵向；横屏或大屏时并排 */
-    .tri-grid { display:grid; grid-template-columns:1fr; gap:10px; }
-    @media (min-width:680px){ .tri-grid { grid-template-columns:repeat(3,1fr); } }
-
-    /* 安全的多行渲染 */
-    .para { font-size:14px; line-height:1.7; white-space:pre-line; }
+    img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid rgba(255,255,255,0.08); }
   </style>
 </head>
 <body>
-  <header><h1>Selfy AI（移动版）</h1></header>
+  <header>
+    <h1>Selfy AI（移动版）</h1>
+  </header>
   <main>
-    <!-- 仅保留一组按钮 -->
     <div class="uploader">
       <label class="btn" for="file">选择图片</label>
       <input id="file" type="file" accept="image/*" />
-      <button id="shot" class="btn" type="button">拍照</button>
+      <button id="shot" class="btn">拍照</button>
     </div>
+    <img id="preview" class="preview" style="display:none"/>
 
-    <img id="preview" class="preview" alt="预览"/>
-
-    <!-- 初始不渲染任何结果 -->
     <div id="out"></div>
   </main>
 
   <script>
-    // —— 常量/引用 —— //
-    const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
-    const fileInput = document.getElementById('file');
-    const shotBtn   = document.getElementById('shot');
-    const out       = document.getElementById('out');
-    const preview   = document.getElementById('preview');
+  const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
 
-    // “拍照”仅在需要时启用 capture 属性
-    shotBtn.addEventListener('click', () => {
-      fileInput.setAttribute('capture','environment');
-      fileInput.click();
-    });
-    // 点击“选择图片”时移除 capture，避免双入口导致的系统 UI 重复
-    document.querySelector('label[for=file]').addEventListener('click', () => {
-      fileInput.removeAttribute('capture');
-    });
+  const fileInput = document.getElementById('file');
+  const shotBtn = document.getElementById('shot');
+  const out = document.getElementById('out');
+  const preview = document.getElementById('preview');
 
-    // 选择图片 -> 预览 + 调用 /upload
-    fileInput.addEventListener('change', async (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
+  shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
+  document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
 
-      // 清空旧结果，显示图片与“分析中…”
-      out.innerHTML = '';
-      const url = URL.createObjectURL(f);
-      preview.src = url; preview.style.display = 'block';
-      out.innerHTML = '<div class="card loading">分析中…</div>';
+  fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    preview.src = url; preview.style.display = 'block';
+    out.innerHTML = '<div class="card loading">分析中…</div>';
 
-      const fd = new FormData();
-      fd.append('file', f, f.name || 'image.jpg');
+    const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
+    try {
+      const r = await fetch('/upload', { method: 'POST', body: fd });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const data = await r.json();
+      render(data);
+    } catch (err) {
+      out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
+    }
+  });
 
-      try {
-        const r = await fetch('/upload', { method:'POST', body:fd });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const data = await r.json();
-        render(data);
-      } catch (err) {
-        out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
-      }
-    });
+  function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
 
-    // —— 渲染逻辑（仅在拿到数据后渲染） —— //
-    function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
-    function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+  function render(d){
+    const ta = d.meta?.triple_analysis || {};
+    const cb = d.meta?.confidence_breakdown || {};
 
-    function triBlock(name, o){
-      const hex = o?.['卦象'] || '';
-      const sym = SYMBOLS[hex] || '';
-      const rows = [
+    const headline = `
+      <div class="card">
+        <div class="title">Selfy AI</div>
+        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
+        <div class="muted">可信度 ${pct(d.confidence||0)}% · 拆解：
+          图像清晰度 ${pct(cb['图像清晰度']||0)}%｜卦象一致性 ${pct(cb['卦象一致性']||0)}%｜特征显著性 ${pct(cb['特征显著性']||0)}%
+        </div>
+      </div>`;
+
+    function triCard(name, key){
+      const o = ta[key] || {}; const hex = o['卦象'] || ''; const sym = SYMBOLS[hex]||'';
+      const lines = [
         `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
-        `<div class="kv"><b>解读</b><span>${escapeHtml(o?.['解读'] || '—')}</span></div>`
+        `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
       ];
-      if (o?.['经文提示']) rows.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
-      return `<div class="card"><div class="title">${name}</div>${rows.join('')}</div>`;
+      if (o['经文提示']) lines.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
+      return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
     }
 
-    function faceBlock(face, parts){
-      const hex = face?.['卦象'] || '';
-      const sym = SYMBOLS[hex] || '';
-      let rows = [
-        `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
-        `<div class="kv"><b>解读</b><span>${escapeHtml(face?.['解读'] || '—')}</span></div>`
-      ];
-      if (face?.['经文提示']) rows.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(face['经文提示'])}</span></div>`);
-      // 五官细节（按行展示）
-      if (parts && Object.keys(parts).length){
-        rows.push('<div class="hr"></div>');
-        rows = rows.concat(Object.entries(parts).map(([k,v])=>{
-          const h = v?.['卦象'] || '';
-          const hs = h ? `${h}卦（${SYMBOLS[h]||''}）` : '—';
-          const line = `${escapeHtml(v?.['特征']||'')}｜${hs}｜${escapeHtml(v?.['解读']||'')}`;
-          return `<div class="kv"><b>${escapeHtml(k)}</b><span>${line}</span></div>`;
-        }));
-      }
-      return `<div class="card"><div class="title">👤 面相</div>${rows.join('')}</div>`;
+    const tri = `
+      <div class="grid">
+        ${triCard('🧍 姿态','姿态')}
+        ${triCard('🙂 神情','神情')}
+        ${triCard('👤 面相','面容')}
+      </div>`;
+
+    const combo = (()=>{
+      const oc = d.meta?.overview_card || {}; const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
+      return `<div class="card"><div class="title">${escapeHtml(oc.title||'三才之道')}</div><div style="font-size:14px;line-height:1.6">${text}</div></div>`;
+    })();
+
+    const statusCard = (title, items)=>{
+      if (!items || !items.length) return '';
+      return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
     }
 
-    function render(d){
-      const ta  = d?.meta?.triple_analysis || {};
-      const fps = d?.meta?.face_parts || {};
-      const cb  = d?.meta?.confidence_breakdown || {};
+    const doms = d.meta?.domains_status_list || {};
 
-      const headline = `
-        <div class="card">
-          <div class="title">Selfy AI</div>
-          <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d?.archetype || '—')}</div>
-          <div class="muted">图片清晰度 ${pct(cb['图像清晰度']||0)}%</div>
-        </div>`;
+    out.innerHTML = headline + tri + combo +
+                    statusCard('💼 事业｜近期要点', doms['事业']) +
+                    statusCard('💗 感情｜近期要点', doms['感情']);
+  }
 
-      const tri = `
-        <div class="tri-grid">
-          ${triBlock('🧍 姿态', ta['姿态']||{})}
-          ${triBlock('🙂 神情', ta['神情']||{})}
-          ${faceBlock(ta['面容']||{}, fps)}
-        </div>`;
-
-      const combo = (()=>{
-        const oc = d?.meta?.overview_card || {};
-        const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
-        return `<div class="card"><div class="title">${escapeHtml(oc.title||'八卦类比')}</div><div class="para">${text}</div></div>`;
-      })();
-
-      // 近期要点（如果后端仍提供为“词条”，这里转为胶囊；若改成句子也能正常显示）
-      const doms = d?.meta?.domains_status_list || {};
-      const statusCard = (title, items)=>{
-        if (!items || !items.length) return '';
-        return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`;
-      };
-
-      out.innerHTML = headline + tri + combo +
-        statusCard('💼 事业｜近期要点', doms['事业']) +
-        statusCard('💗 感情｜近期要点', doms['感情']);
-    }
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
   </script>
 </body>
 </html>
