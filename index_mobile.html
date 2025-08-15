@@ -26,6 +26,8 @@
     .hr { height:1px; background:rgba(255,255,255,0.06); margin:10px -14px; }
     .loading { opacity:.7 }
     img.preview { width:100%; border-radius:12px; margin:10px 0; border:1px solid rgba(255,255,255,0.08); }
+    .fp-grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .fp-name { width:84px; color:#aeb6d9 }
   </style>
 </head>
 <body>
@@ -59,7 +61,7 @@
     if (!f) return;
     const url = URL.createObjectURL(f);
     preview.src = url; preview.style.display = 'block';
-    out.innerHTML = '<div class="card loading">分析中…</div>';
+    out.innerHTML = '<div class="card loading">象数分析中…</div>';
 
     const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
     try {
@@ -72,11 +74,19 @@
     }
   });
 
-  function pct(n){ try{ return Math.round(n*100); }catch(e){ return 0; } }
+  function pct(n){ const v = Number(n); if (!isFinite(v)) return 0; return Math.round(v*100); }
+
+  function bulletsFromText(t, limit=6){
+    const txt = (t||'').replace(/[；;]+/g,'；').trim();
+    let parts = txt.split('；');
+    if (parts.length <= 1) parts = txt.split(/[，,]/);
+    return parts.map(s=>s.trim()).filter(Boolean).slice(0, limit);
+  }
 
   function render(d){
     const ta = d.meta?.triple_analysis || {};
-    const cb = d.meta?.confidence_breakdown || {};
+    const cbRaw = d.meta?.confidence_breakdown || {};
+    const cb = cbRaw.scores || cbRaw; // 兼容旧版(scores)与新版(扁平)
 
     const headline = `
       <div class="card">
@@ -93,7 +103,6 @@
         `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
         `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
       ];
-      if (o['经文提示']) lines.push(`<div class="kv"><b>经文提示</b><span>${escapeHtml(o['经文提示'])}</span></div>`);
       return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
     }
 
@@ -104,21 +113,44 @@
         ${triCard('👤 面相','面容')}
       </div>`;
 
-    const combo = (()=>{
-      const oc = d.meta?.overview_card || {}; const text = (oc.summary||'').split('\n').map(ln=>escapeHtml(ln)).join('<br>');
-      return `<div class="card"><div class="title">${escapeHtml(oc.title||'三才之道')}</div><div style="font-size:14px;line-height:1.6">${text}</div></div>`;
-    })();
+    // 卦象组合与总览
+    const oc = d.meta?.overview_card || {};
+    const title = oc.title || (`🔮 卦象组合：${escapeHtml(d.meta?.combo_title || '—')}`);
+    const text = (oc.summary || d.meta?.overview || '')
+                  .split('\n').map(ln=>escapeHtml(ln)).join('<br>');
+    const combo = `<div class="card"><div class="title">${title}</div><div style="font-size:14px;line-height:1.6">${text||'—'}</div></div>`;
+
+    // 五官爻分析
+    const fp = d.meta?.face_parts || {};
+    const fpKeys = Object.keys(fp);
+    let fpHtml = '';
+    if (fpKeys.length){
+      const rows = fpKeys.map(k=>{
+        const item = fp[k]||{}; const hex = item['卦象']||''; const sym = SYMBOLS[hex]||'';
+        return `<div class="card">
+          <div class="title">${escapeHtml(k)}</div>
+          <div class="kv"><b class="fp-name">特征</b><span>${escapeHtml(item['特征']||'—')}</span></div>
+          <div class="kv"><b class="fp-name">卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>
+          <div class="kv"><b class="fp-name">解读</b><span>${escapeHtml(item['解读']||'—')}</span></div>
+        </div>`;
+      }).join('');
+      fpHtml = `<div class="card" style="padding:0;border:none;background:transparent;">${rows}</div>`;
+    }
+
+    // 事业/感情要点 —— 兼容新版(domains_status_list)与仅有详情文本(domains_detail)
+    const domsList = d.meta?.domains_status_list || {};
+    const domsDetail = d.meta?.domains_detail || {};
+    const domBiz = domsList['事业'] || bulletsFromText(domsDetail['金钱与事业']);
+    const domLove = domsList['感情'] || bulletsFromText(domsDetail['配偶与感情']);
 
     const statusCard = (title, items)=>{
       if (!items || !items.length) return '';
       return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
     }
 
-    const doms = d.meta?.domains_status_list || {};
-
-    out.innerHTML = headline + tri + combo +
-                    statusCard('💼 事业｜近期要点', doms['事业']) +
-                    statusCard('💗 感情｜近期要点', doms['感情']);
+    out.innerHTML = headline + tri + combo + fpHtml +
+                    statusCard('💼 事业｜近期要点', domBiz) +
+                    statusCard('💗 感情｜近期要点', domLove);
   }
 
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
