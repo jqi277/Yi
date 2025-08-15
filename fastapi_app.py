@@ -167,6 +167,30 @@ WUXING = {
 SHENG = {"木":"火","火":"土","土":"金","金":"水","水":"木"}
 KE    = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
 
+EIGHT_TRIGRAMS = set(list("乾坤震巽坎离艮兑"))
+
+def _normalize_hex_name(raw: str) -> str:
+    """把模型可能输出的“泰/否/需/讼/乾卦/坤（地）/艮卦（山）/离火”等，规范成 8 卦之一；否则返回空串。"""
+    if not isinstance(raw, str): 
+        return ""
+    s = raw.strip()
+    # 快速命中：如果本身就是八卦之一
+    if s in EIGHT_TRIGRAMS:
+        return s
+    # 去掉“卦”“卦（…）”以及括注
+    s = re.sub(r"(卦（[^）]*）|卦|[()（）\s])", "", s)
+    # 在字符串里找第一个八卦字
+    for ch in s:
+        if ch in EIGHT_TRIGRAMS:
+            return ch
+    # 六十四卦名里含“天地雷风水火山泽”，取其上下卦常见字，也做一次兜底
+    for ch in "天地雷风水火山泽":
+        # 映射到八卦（天→乾 地→坤 雷→震 风→巽 水→坎 火→离 山→艮 泽→兑）
+        m = {"天":"乾","地":"坤","雷":"震","风":"巽","水":"坎","火":"离","山":"艮","泽":"兑"}.get(ch)
+        if m and ch in raw:
+            return m
+    return ""
+
 def _pair_relation_phrase(a_ele: str, b_ele: str) -> (str, str):
     if not a_ele or not b_ele: return "", "相并"
     if a_ele == b_ele: return f"{b_ele}同{a_ele}", "比和"
@@ -240,9 +264,9 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> (List[str], Dict[str,Any]):
         tend = (o.get("性格倾向") or "").strip().rstrip("；;。")
         if tend: traits.append(tend)
         merged = _combine_sentence(o.get("说明") or "", o.get("解读") or "")
-        hexname = (o.get("卦象") or "").strip()
-        hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
-        o["卦象"] = hexname
+        hexname_raw = (o.get("卦象") or "").strip()
+        hexname = _normalize_hex_name(hexname_raw)
+        o["卦象"] = hexname  # 现在一定是 乾坤震巽坎离艮兑 或者 ""
         pure, hint = _extract_jingwen(merged)
         if not hint and hexname: hint = JINGWEN_HINT.get(hexname, "")
         o["说明"] = ""
@@ -264,37 +288,105 @@ def _clean_text(s: str) -> str:
     return _dedupe_smart(s)
 
 def _gen_archetype(hexes: List[str], ta: Dict[str,Any], face_parts: Dict[str,Any]) -> str:
-    main = hexes[0] if hexes and hexes[0] else ""
-    aux  = hexes[1] if len(hexes)>1 else ""
-    base = hexes[2] if len(hexes)>2 else ""
-    # 组合一些常见意象词
+    """
+    依据主/辅/基三卦（已尽量规范为八卦），结合五官细节，生成 2–4 个词的人格标签；
+    若命中常见并置，压缩为 4 字短语。全程容错、零 KeyError。
+    """
+    # 八卦→关键词池
     kw = {
-        "乾":"主导/果断/坚毅", "坤":"包容/稳重/承载", "离":"明晰/表达/洞察",
-        "兑":"亲和/悦人/沟通", "震":"起势/果敢/突破", "巽":"协调/渗透/合众",
-        "艮":"定力/守度/边界", "坎":"审慎/求证/韧性"
+        "乾":"主导/果断/坚毅",
+        "坤":"包容/稳重/承载",
+        "离":"明晰/表达/洞察",
+        "兑":"亲和/悦人/沟通",
+        "震":"起势/果敢/突破",
+        "巽":"协调/渗透/合众",
+        "艮":"定力/守度/边界",
+        "坎":"审慎/求证/韧性",
     }
-    def pick(h): 
-        if not h: return []
+
+    # 规范化（若外部已做 _normalize_hex_name，这里仍二次兜底）
+    def _norm(h: str) -> str:
+        try:
+            return _normalize_hex_name(h)  # 外部已有工具则用之
+        except NameError:
+            return h if isinstance(h, str) and h in kw else ""
+
+    main = _norm(hexes[0]) if hexes and hexes[0] else ""
+    aux  = _norm(hexes[1]) if len(hexes) > 1 else ""
+    base = _norm(hexes[2]) if len(hexes) > 2 else ""
+
+    # 安全取词
+    def pick(h: str) -> List[str]:
+        if not h or h not in kw:
+            return []
         return kw[h].split("/")
 
-    pool = pick(main)[:2] + pick(aux)[:1] + pick(base)[:1]
-    # 去重并挑 2–4 个，拼成 4~8 字短语
+    pool: List[str] = []
+    pool += pick(main)[:2]  # 主卦优先拿 2 个
+    pool += pick(aux)[:1]   # 辅卦 1 个
+    pool += pick(base)[:1]  # 基卦 1 个
+
+    # 从五官细节里提取加分词（可选）
+    # 轻量关键词映射：命中即加，避免重复
+    face_bonus_map = {
+        "眉": [("平直","坚定"), ("浓","果敢"), ("弯曲","亲和")],
+        "眼": [("明亮","洞察"), ("坚定","坚毅"), ("柔和","包容")],
+        "鼻": [("高挺","目标感"), ("端正","稳重")],
+        "嘴": [("唇厚","表达"), ("上扬","乐观")],
+        "颧": [("分明","主导"), ("高","进取")],
+        "下巴": [("圆润","承载"), ("有角度","边界")],
+    }
+    try:
+        for part, confs in face_bonus_map.items():
+            info = face_parts.get(part) if isinstance(face_parts, dict) else None
+            txt = ""
+            if isinstance(info, dict):
+                txt = f"{info.get('特征','')}{info.get('解读','')}"
+            elif isinstance(info, str):
+                txt = info
+            txt = (txt or "").strip()
+            for needle, tag in confs:
+                if needle in txt and tag not in pool:
+                    pool.append(tag)
+    except Exception:
+        pass  # 面部信息缺失或结构异常时忽略
+
+    # 去重，最多取 3~4 个
     seen, words = set(), []
     for p in pool:
+        p = (p or "").strip()
+        if not p:
+            continue
         if p not in seen:
-            seen.add(p); words.append(p)
-        if len(words)>=3: break
-    # 常见并置
+            seen.add(p)
+            words.append(p)
+        if len(words) >= 4:
+            break
+
+    # 若仍为空，用主卦风格兜底
+    if not words:
+        style = _style_by_main_plain(main) if main else "整体风格平衡"
+        # 去掉“整体偏”/“整体”，保留核心词
+        style = style.replace("整体偏", "").replace("整体", "")
+        words = [style or "平衡"]
+
+    # 常见并置 → 4 字短语（优先命中两词组合）
     mapping = {
-        frozenset(("主导","亲和")):"刚柔相济",
-        frozenset(("主导","明晰")):"明断果决",
-        frozenset(("稳重","亲和")):"厚载和悦",
-        frozenset(("定力","表达")):"守度能言",
+        frozenset(("主导","亲和")): "刚柔相济",
+        frozenset(("主导","明晰")): "明断果决",
+        frozenset(("稳重","亲和")): "厚载和悦",
+        frozenset(("定力","表达")): "守度能言",
+        frozenset(("果敢","明晰")): "明勇并济",
+        frozenset(("审慎","表达")): "谨言有度",
     }
-    key = frozenset([w for w in words if len(w)<=2])
-    label = mapping.get(key, None)
-    if label: return label
-    return "、".join(words) if words else "气象平衡"
+    # 只用长度<=2 的精炼词参与 4 字匹配
+    short_key = frozenset([w for w in words if len(w) <= 2])
+    label = mapping.get(short_key)
+    if label:
+        return label
+
+    # 否则返回“、”连接的词组（2~4 个）
+    return "、".join(words[:4])
 
 def _human_status_sentence(s: set, domain: str) -> str:
     lines: List[str] = []
