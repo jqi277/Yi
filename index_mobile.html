@@ -45,18 +45,32 @@
     <div id="out"></div>
   </main>
 
-  <script>
-  const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
+<script>
+function safeText(t) {
+    if (t !== undefined && t !== null) {
+        if (typeof t === "object") {
+            try {
+                return JSON.stringify(t, null, 2);
+            } catch (e) {
+                return String(t);
+            }
+        }
+        return String(t);
+    }
+    return "";
+}
 
-  const fileInput = document.getElementById('file');
-  const shotBtn = document.getElementById('shot');
-  const out = document.getElementById('out');
-  const preview = document.getElementById('preview');
+const SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"};
 
-  shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
-  document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
+const fileInput = document.getElementById('file');
+const shotBtn = document.getElementById('shot');
+const out = document.getElementById('out');
+const preview = document.getElementById('preview');
 
-  fileInput.addEventListener('change', async (e) => {
+shotBtn.addEventListener('click', () => { fileInput.setAttribute('capture','environment'); fileInput.click(); });
+document.querySelector('label[for=file]').addEventListener('click', () => { fileInput.removeAttribute('capture'); });
+
+fileInput.addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
     const url = URL.createObjectURL(f);
@@ -65,45 +79,45 @@
 
     const fd = new FormData(); fd.append('file', f, f.name || 'image.jpg');
     try {
-      const r = await fetch('/upload', { method: 'POST', body: fd });
-      if (!r.ok) throw new Error('HTTP '+r.status);
-      const data = await r.json();
-      render(data);
+        const r = await fetch('/upload', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error('HTTP '+r.status);
+        const data = await r.json();
+        render(data);
     } catch (err) {
-      out.innerHTML = `<div class="card">出错了：${(err && err.message) || err}</div>`;
+        out.innerHTML = `<div class="card">出错了：${safeText(err && err.message) || safeText(err)}</div>`;
     }
-  });
+});
 
-  function pct(n){ const v = Number(n); if (!isFinite(v)) return 0; return Math.round(v*100); }
+function pct(n){ const v = Number(n); if (!isFinite(v)) return 0; return Math.round(v*100); }
 
-  function bulletsFromText(t, limit=6){
-    const txt = (t||'').replace(/[；;]+/g,'；').trim();
+function bulletsFromText(t, limit=6){
+    const txt = safeText(t).replace(/[；;]+/g,'；').trim();
     let parts = txt.split('；');
     if (parts.length <= 1) parts = txt.split(/[，,]/);
     return parts.map(s=>s.trim()).filter(Boolean).slice(0, limit);
-  }
+}
 
-  function render(d){
+function render(d){
     const ta = d.meta?.triple_analysis || {};
     const cbRaw = d.meta?.confidence_breakdown || {};
-    const cb = cbRaw.scores || cbRaw; // 兼容旧版(scores)与新版(扁平)
+    const cb = cbRaw.scores || cbRaw;
 
     const headline = `
       <div class="card">
         <div class="title">Selfy AI</div>
-        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(d.archetype || '—')}</div>
+        <div style="font-size:16px; margin:6px 0 2px;">人格画像：${escapeHtml(safeText(d.archetype) || '—')}</div>
         <div class="muted">可信度 ${pct(d.confidence||0)}% · 拆解：
           图像清晰度 ${pct(cb['图像清晰度']||0)}%｜卦象一致性 ${pct(cb['卦象一致性']||0)}%｜特征显著性 ${pct(cb['特征显著性']||0)}%
         </div>
       </div>`;
 
     function triCard(name, key){
-      const o = ta[key] || {}; const hex = o['卦象'] || ''; const sym = SYMBOLS[hex]||'';
-      const lines = [
-        `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
-        `<div class="kv"><b>解读</b><span>${escapeHtml(o['解读']||'—')}</span></div>`
-      ];
-      return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
+        const o = ta[key] || {}; const hex = safeText(o['卦象']); const sym = SYMBOLS[hex]||'';
+        const lines = [
+            `<div class="kv"><b>卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>`,
+            `<div class="kv"><b>解读</b><span>${escapeHtml(safeText(o['解读'])||'—')}</span></div>`
+        ];
+        return `<div class="card"><div class="title">${name}</div>${lines.join('')}</div>`;
     }
 
     const tri = `
@@ -113,31 +127,28 @@
         ${triCard('👤 面相','面容')}
       </div>`;
 
-    // 卦象组合与总览
     const oc = d.meta?.overview_card || {};
-    const title = oc.title || (`🔮 卦象组合：${escapeHtml(d.meta?.combo_title || '—')}`);
-    const text = (oc.summary || d.meta?.overview || '')
+    const title = safeText(oc.title) || (`🔮 卦象组合：${escapeHtml(safeText(d.meta?.combo_title) || '—')}`);
+    const text = safeText(oc.summary || d.meta?.overview || '')
                   .split('\n').map(ln=>escapeHtml(ln)).join('<br>');
     const combo = `<div class="card"><div class="title">${title}</div><div style="font-size:14px;line-height:1.6">${text||'—'}</div></div>`;
 
-    // 五官爻分析
     const fp = d.meta?.face_parts || {};
     const fpKeys = Object.keys(fp);
     let fpHtml = '';
     if (fpKeys.length){
-      const rows = fpKeys.map(k=>{
-        const item = fp[k]||{}; const hex = item['卦象']||''; const sym = SYMBOLS[hex]||'';
-        return `<div class="card">
-          <div class="title">${escapeHtml(k)}</div>
-          <div class="kv"><b class="fp-name">特征</b><span>${escapeHtml(item['特征']||'—')}</span></div>
-          <div class="kv"><b class="fp-name">卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>
-          <div class="kv"><b class="fp-name">解读</b><span>${escapeHtml(item['解读']||'—')}</span></div>
-        </div>`;
-      }).join('');
-      fpHtml = `<div class="card" style="padding:0;border:none;background:transparent;">${rows}</div>`;
+        const rows = fpKeys.map(k=>{
+            const item = fp[k]||{}; const hex = safeText(item['卦象']); const sym = SYMBOLS[hex]||'';
+            return `<div class="card">
+              <div class="title">${escapeHtml(safeText(k))}</div>
+              <div class="kv"><b class="fp-name">特征</b><span>${escapeHtml(safeText(item['特征'])||'—')}</span></div>
+              <div class="kv"><b class="fp-name">卦象</b><span>${hex ? `${hex}卦（${sym}）` : '—'}</span></div>
+              <div class="kv"><b class="fp-name">解读</b><span>${escapeHtml(safeText(item['解读'])||'—')}</span></div>
+            </div>`;
+        }).join('');
+        fpHtml = `<div class="card" style="padding:0;border:none;background:transparent;">${rows}</div>`;
     }
 
-    // 事业/感情要点 —— 兼容新版(domains_status_list)与仅有详情文本(domains_detail)
     const domsList = d.meta?.domains_status_list || {};
     const domsDetail = d.meta?.domains_detail || {};
     const domBiz = domsList['事业'] || bulletsFromText(domsDetail['金钱与事业']);
@@ -145,17 +156,17 @@
     const domSocial = domsList['人际关系'] || bulletsFromText(domsDetail['人际关系']);
     
     const statusCard = (title, items)=>{
-      if (!items || !items.length) return '';
-      return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(x)}</span>`).join('')}</div></div>`
+        if (!items || !items.length) return '';
+        return `<div class="card"><div class="title">${title}</div><div class="bullets">${items.map(x=>`<span class="pill">${escapeHtml(safeText(x))}</span>`).join('')}</div></div>`
     }
 
     out.innerHTML = headline + tri + combo + fpHtml +
                 statusCard('💼 事业｜近期要点', domBiz) +
                 statusCard('💗 感情｜近期要点', domLove) +
                 statusCard('🤝 人际关系｜近期要点', domSocial);
-  }
+}
 
-  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
-  </script>
+function escapeHtml(s){ return safeText(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+</script>
 </body>
 </html>
