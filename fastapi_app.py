@@ -1,11 +1,12 @@
-# fastapi_app.py  (runtime v3.8.6-ux, analysis logic v3.7.2)
-# 3.8.6-ux：按你最新要求：
-# - 仅在 UI 显示「图片清晰度」，去掉其他可信度露出
-# - 人格画像由象与五官动态生成，无预设标签；容错非八卦名（如“泰”）
-# - 三分象解读不再插入【卦·关键词】标签；经文提示独立一行
-# - 面相卡片内嵌五官细节（含各自卦象）；保留面相整体卦象
-# - “三才之道”→“八卦类比”，只做易理分析，不写建议口吻
-# - 文本清洗修正“。， / 。；”等；修复此前 SyntaxError & KeyError
+# fastapi_app.py  (runtime v3.8.6-ux-fix1, analysis logic v3.7.2)
+# 3.8.6-ux-fix1：按你的最新要求完成的“动态易经逻辑”版本
+# - 仅在 UI 显示「图片清晰度」（去掉其它可信度露出）
+# - 人格画像由三象 + 五官动态生成，无固定预设标签；容错非八卦名（如“泰”）
+# - 三分象解读不再插入【卦·关键词】标签；“经文提示”独立成行，且多候选去模板化
+# - 面相卡片内嵌“五官细节”（含各自卦象）；面相整体卦象由“五官两强爻”综合推算
+# - “三才之道”改为“八卦类比”：根据主/辅/基与五行生克推导语句（非模板）
+# - 事业/感情：输出为语句（“近期状态/具体建议”），由三象“分与合”推导
+# - 文本清洗修正“。， / 。；”等；修复此前 SyntaxError / KeyError / 早返回问题
 
 import os, base64, json, logging, traceback, re
 from typing import Dict, Any, List, Tuple
@@ -16,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from openai import OpenAI
 
-RUNTIME_VERSION = "3.8.6-ux"
+RUNTIME_VERSION = "3.8.6-ux-fix1"
 ANALYSIS_VERSION = os.getenv("ANALYSIS_VERSION", "372").strip()
 SCHEMA_ID = "selfy.v3"
 DEBUG = str(os.getenv("DEBUG","0")).strip() in ("1","true","True","YES","yes")
@@ -33,28 +34,52 @@ try:
 except Exception as e:
     logger.error("OpenAI client init failed: %s", e); client=None
 
+# ---------- 八卦 / 五行基础 ----------
 BAGUA_SYMBOLS = {"艮":"山","离":"火","兑":"泽","乾":"天","坤":"地","震":"雷","巽":"风","坎":"水"}
+WUXING = {
+    "乾":{"element":"金","polarity":"阳","virtue":"刚健自强、御领局面"},
+    "兑":{"element":"金","polarity":"阴","virtue":"和悦亲和、以乐感人"},
+    "离":{"element":"火","polarity":"阴","virtue":"明辨洞察、擅于表达"},
+    "震":{"element":"木","polarity":"阳","virtue":"发动起势、敢于突破"},
+    "巽":{"element":"木","polarity":"阴","virtue":"渗透协调、善谋合众"},
+    "坎":{"element":"水","polarity":"阳","virtue":"审慎探深、居安识危"},
+    "艮":{"element":"土","polarity":"阳","virtue":"止定有度、守正立界"},
+    "坤":{"element":"土","polarity":"阴","virtue":"厚德载物、内敛承载"},
+}
+# 生克表：key 生 -> value； key 克 -> value
+SHENG = {"木":"火","火":"土","土":"金","金":"水","水":"木"}
+KE    = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
 
-# —— 保留 JINGWEN_HINT 作为兜底，同时新增多候选版本 —— 
+# 经文提示（默认+候选，防模板）
+JINGWEN_HINT = {
+    "乾":"《乾》亢龙有悔：过强则折，宜收锋敛势",
+    "坤":"《坤》含弘光大：厚载不争，慎因循不决",
+    "艮":"《艮》艮其背：守界有度，忌僵硬不化",
+    "兑":"《兑》和兑以说：以悦达人，忌过度迎合",
+    "离":"《离》明两作：明察而易苛，宜明而不燥",
+    "坎":"《坎》习坎重险：慎审求证，忌反复犹疑",
+    "震":"《震》震来虩虩：初动宜稳，忌躁进冒进",
+    "巽":"《巽》小亨利往：渗透有方，忌优柔寡断",
+}
 JINGWEN_CANDIDATES = {
     "乾":[
         "《乾》亢龙有悔：过强则折，宜收锋敛势",
-        "《乾》君子以自强不息：取势不妄，持盈保泰",
-        "《乾》见龙在田：位未至而志先定，慎躁进"
+        "《乾》见龙在田：位未至而志先定，慎躁进",
+        "《乾》君子以自强不息：持盈保泰"
     ],
     "坤":[
         "《坤》含弘光大：厚载不争，慎因循不决",
-        "《坤》先迷后得：宁迟毋躁，以静制动",
-        "《坤》直方大：守正以容，戒因小失大"
+        "《坤》直方大：守正以容，戒因小失大",
+        "《坤》先迷后得：宁迟毋躁，以静制动"
     ],
     "离":[
         "《离》明两作：明察不苛，忌过度求全",
-        "《离》丽日中天：光在外而本在内",
-        "《离》得位守中：照见而不炫耀"
+        "《离》得位守中：照见而不炫耀",
+        "《离》丽日中天：光在外而本在内"
     ],
     "兑":[
-        "《兑》和兑以说：以悦达人，忌逢迎失度",
         "《兑》说以先民：言贵诚恳，不饰口实",
+        "《兑》和兑以说：以悦达人，忌逢迎失度",
         "《兑》泽上行：和而有界"
     ],
     "艮":[
@@ -78,19 +103,18 @@ JINGWEN_CANDIDATES = {
         "《巽》巽而止：度中有伸"
     ],
 }
-
 def _pick_jingwen(hexname: str, role: str, rel_mf: str = "", rel_bm: str = "") -> str:
-    """按卦、位置（姿态/神情/面容）与生克关系挑一条经文提示，避免千篇一律。"""
+    """按卦、位置与生克关系挑一条经文，避免千篇一律。"""
     if not hexname: 
         return ""
     cands = JINGWEN_CANDIDATES.get(hexname) or []
     if not cands:
-        return JINGWEN_HINT.get(hexname,"")
-    # 简单的、可重现的选择：用 role+关系 做 hash 索引
+        return JINGWEN_HINT.get(hexname, "")
     key = (role or "") + (rel_mf or "") + (rel_bm or "")
     idx = (sum(ord(ch) for ch in key) + len(role)) % len(cands)
     return cands[idx]
 
+# ---------- OpenAI Tools Schema ----------
 def _build_tools_schema() -> List[Dict[str, Any]]:
     return [{
       "type":"function",
@@ -103,7 +127,11 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
             "summary":{"type":"string"},
             "archetype":{"type":"string"},
             "confidence":{"type":"number"},
-            "sections":{"type":"object","properties":{"姿态":{"type":"string"},"神情":{"type":"string"},"面相":{"type":"string"}},"required":["姿态","神情","面相"],"additionalProperties":False},
+            "sections":{"type":"object","properties":{
+                "姿态":{"type":"string"},
+                "神情":{"type":"string"},
+                "面相":{"type":"string"}
+            },"required":["姿态","神情","面相"],"additionalProperties":False},
             "domains":{"type":"array","items":{"type":"string"}},
             "meta":{"type":"object","additionalProperties":True}
           },
@@ -113,31 +141,29 @@ def _build_tools_schema() -> List[Dict[str, Any]]:
       }
     }]
 
+# ---------- Prompt ----------
 def _json_hint() -> str:
     return ("只以 JSON object 返回（必须 JSON）。示例:{\"summary\":\"…\",\"archetype\":\"…\",\"confidence\":0.9,"
             "\"sections\":{\"姿态\":\"…\",\"神情\":\"…\",\"面相\":\"…\"},"
             "\"domains\":[\"金钱与事业\",\"配偶与感情\"],"
-            "\"meta\":{\"triple_analysis\":{\"姿态\":{\"说明\":\"…\",\"卦象\":\"艮\",\"解读\":\"…\",\"性格倾向\":\"…\"},\"神情\":{…},\"面容\":{…}},"
+            "\"meta\":{"
+            "\"triple_analysis\":{\"姿态\":{\"说明\":\"…\",\"卦象\":\"艮\",\"解读\":\"…\",\"性格倾向\":\"…\"},\"神情\":{…},\"面容\":{…}},"
             "\"face_parts\":{\"眉\":{\"特征\":\"…\",\"卦象\":\"…\",\"解读\":\"…\"}},"
-            "\"domains_detail\":{\"金钱与事业\":\"…\",\"配偶与感情\":\"…\"}}}")
+            "\"domains_status\":{\"事业\":\"…\",\"感情\":\"…\"},"
+            "\"domains_suggestion\":{\"事业\":\"…\",\"感情\":\"…\"}"
+            "}}")
 
 def _prompt_for_image_v372():
     sys = (
-      "你是 Selfy AI 的易经观相助手（v3.7.2 风格）。"
-      "严格按“三象四段式”分析：【姿态/神情/面容】三部分。每部分必须包含："
-      "1) 说明：1句，客观描绘外观/动作/气质；"
-      "2) 卦象：仅写一个卦名（艮/离/兑/乾/坤/震/巽/坎）；"
-      "3) 解读：1–2句，基于卦象与观察做含义阐释；"
-      "4) 性格倾向：1–2句，独立成段，不要与“解读”重复措辞。"
-      "然后给出："
-      "5) 卦象组合：标题=三象卦名相加（如“艮 + 离 + 兑”），正文 90–150 字。"
-      "6) 总结性格印象：20–40字，避免模板化；"
-      "7) 人格标签 archetype：2–5字中文，如“外冷内热/主导型/谨慎型”。"
-      "面相需拆成五官：在 meta.face_parts 中，给【眉/眼/鼻/嘴/颧/下巴】（任选5项覆盖）各写“特征（外观）”与“解读（基于易经）”。"
-      "domains 仅从 ['金钱与事业','配偶与感情'] 选择；在 meta.domains_detail 中分别写 60–90 字建议文本。"
-      "将结果通过 submit_analysis_v3 工具返回，并"+_json_hint()+"。语言：中文。"
+      "你是 Selfy AI 的易经观相助手（v3.7.2）。务必通过函数返回 JSON。服务端只清洗校验，不补充文案。\n"
+      "【三象】姿态/神情/面容：每项含 说明(1句)、卦象(单字)、解读(1–2句, 不要【】标签)、性格倾向(1句)。\n"
+      "【五官】meta.face_parts：眉/眼/鼻/嘴/颧/下巴≥5项；每项含 特征/卦象(单字)/解读(可提“过旺/受阻”风险)。\n"
+      "【八卦类比】title=三卦相加(如“艮 + 坤 + 兑”)；正文需：主/辅/基一句画像 + 主与辅、基与主五行关系语句 + 综合观。必须依据当前三卦生成，避免套话。\n"
+      "【经文提示】为姿态/神情/面容各给一条，简短说明为何贴合当前观察（可引用卦辞/爻辞）。\n"
+      "【事业/感情】meta.domains_status：各2–3句“近期状态”；meta.domains_suggestion：各2–3句“具体建议”。两者均由三象分与合推导。\n"
+      + _json_hint()
     )
-    user = "请按 3.7.2 风格分析图片，严格通过函数返回 JSON（不要输出自由文本）。"
+    user = "请分析图片并返回 JSON（不要输出自由文本）。"
     return [{"role":"system","content":sys},{"role":"user","content":user}]
 
 # ---------- 文本清洗 ----------
@@ -152,7 +178,7 @@ def _depronoun(s: str) -> str:
     if not isinstance(s, str): return s
     s = s.strip()
     s = re.sub(r"^(他|她|TA|你|对方|其)(的)?[，、： ]*", "", s)
-    s = re.sub(r"^(在(事业|感情|生活)[上中]|目前|近期)[，、： ]*", "", s)
+    s = re.sub(r"^(在(事业|感情|生活)[上中]|目前|近期|当下)[，、： ]*", "", s)
     return s
 
 def _neutralize(s: str) -> str:
@@ -191,7 +217,10 @@ def _dedupe_smart(s: str) -> str:
             if ck and ck not in seen_keys:
                 seen_keys.add(ck)
                 kept.append(t)
-        clean_sentences.append("，".join(kept))
+        if kept:
+            clean_sentences.append("，".join(kept))
+    if not clean_sentences:
+        return ""
     return "。".join(clean_sentences) + "。"
 
 def _strip_domain_lead(s: str) -> str:
@@ -200,23 +229,7 @@ def _strip_domain_lead(s: str) -> str:
     s = re.sub(r"^上[，、： ]*", "", s)
     return s
 
-# ---------- 易经语义 ----------
-WUXING = {
-    "乾":{"element":"金","polarity":"阳","virtue":"刚健自强、御领局面"},
-    "兑":{"element":"金","polarity":"阴","virtue":"和悦亲和、以乐感人"},
-    "离":{"element":"火","polarity":"阴","virtue":"明辨洞察、擅于表达"},
-    "震":{"element":"木","polarity":"阳","virtue":"发动起势、敢于突破"},
-    "巽":{"element":"木","polarity":"阴","virtue":"渗透协调、善谋合众"},
-    "坎":{"element":"水","polarity":"阳","virtue":"审慎探深、居安识危"},
-    "艮":{"element":"土","polarity":"阳","virtue":"止定有度、守正立界"},
-    "坤":{"element":"土","polarity":"阴","virtue":"厚德载物、内敛承载"}
-}
-SHENG = {"木":"火","火":"土","土":"金","金":"水","水":"木"}
-KE    = {"木":"土","土":"水","水":"火","火":"金","金":"木"}
-
-# —— 放在 WUXING/SHENG/KE 定义的后面 —— 
-
-# 五官 → 卦（主映射，次映射可用于并列时微调）
+# ---------- 五官 → 卦（爻象推合） ----------
 FACIAL_MAP = {
     "眼":  {"primary":"离", "alt":["兑"]},     # 神在目，离火主明；笑眼亦近兑
     "眉":  {"primary":"巽", "alt":["震","艮"]},# 条达生发为木；浓硬逼人近艮
@@ -225,21 +238,18 @@ FACIAL_MAP = {
     "颧":  {"primary":"乾", "alt":["兑","震"]},# 权骨外拓，刚健取势
     "下巴":{"primary":"坤", "alt":["艮"]},     # 承载收敛
 }
-
-# 显著度关键词（命中加权），可按需要增删
 FEATURE_KEYWORDS = {
     "高":1.2,"挺":1.2,"立":1.1,"饱满":1.15,"明显":1.1,"宽":1.05,"尖":1.05,"厚":1.05,
     "圆":1.05,"有神":1.25,"发光":1.25,"上扬":1.1,"分明":1.1,"立体":1.1,"对称":1.05,
     "笑":1.15,"弯":1.05,"浓":1.05,"薄":0.95,"塌":0.9,"无神":0.9
 }
-
-PART_PRIORITY = ["眼","眉","鼻","颧","嘴","下巴"]  # 并列时的器官优先级
+PART_PRIORITY = ["眼","眉","鼻","颧","嘴","下巴"]  # 并列时的器官优先级（从高到低）
 
 def _score_face_parts(face_parts: Dict[str,Any]) -> Dict[str,float]:
     """根据‘特征’文本长度和关键词给每个五官打显著度分。"""
-    scores = {}
+    scores: Dict[str,float] = {}
     for part, info in (face_parts or {}).items():
-        if part not in FACIAL_MAP: 
+        if part not in FACIAL_MAP:
             continue
         feat = (info or {}).get("特征","") or ""
         base = 1.0 + min(len(feat), 40) / 80.0  # 文本越具体，基础分略高（1.0~1.5）
@@ -251,13 +261,15 @@ def _score_face_parts(face_parts: Dict[str,Any]) -> Dict[str,float]:
     return scores
 
 def _resolve_two_hex_to_main(h1: str, h2: str) -> str:
-    """根据两卦五行关系推主卦：相生取'被生者'；相克取'克者'；同/并按优先级。"""
+    """根据两卦五行关系推主卦：相生取'被生者'；相克取'克者'；同/并按外部排序优先。"""
     if h1 not in WUXING and h2 not in WUXING:
         return ""
-    if h1 not in WUXING: return h2
-    if h2 not in WUXING: return h1
+    if h1 not in WUXING:
+        return h2
+    if h2 not in WUXING:
+        return h1
     e1, e2 = WUXING[h1]["element"], WUXING[h2]["element"]
-    if SHENG.get(e1) == e2:   # e1生e2 → 取 e2 对应卦
+    if SHENG.get(e1) == e2:   # e1生e2 → 取 e2
         return h2
     if SHENG.get(e2) == e1:   # e2生e1 → 取 e1
         return h1
@@ -265,40 +277,54 @@ def _resolve_two_hex_to_main(h1: str, h2: str) -> str:
         return h1
     if KE.get(e2) == e1:      # e2克e1 → 取 e2
         return h2
-    # 同/并：返回 h1（外部按器官优先级已排序）
-    return h1
+    return h1  # 同/并，保持外部优先序
 
-def _infer_face_hex_from_parts(face_parts: Dict[str,Any]) -> str:
-    """用“最突出的两个器官”推面相主卦。"""
-    if not face_parts: 
-        return ""
+def _infer_face_hex_from_parts(face_parts: Dict[str, Any]) -> str:
+    """由五官中最显著的两项爻象综合推出‘面相’的主卦。"""
     scores = _score_face_parts(face_parts)
-    if not scores: 
+    if not scores:
         return ""
-    # 先按显著度降序；显著度相同按器官优先级
-    ordered = sorted(scores.items(), key=lambda kv: (-kv[1], PART_PRIORITY.index(kv[0]) if kv[0] in PART_PRIORITY else 99))
-    top = [p for p,_ in ordered[:2]]
-    if not top: return ""
-    def to_hex(part: str) -> str:
-        mp = FACIAL_MAP.get(part) or {}
-        return mp.get("primary","")
-    h1 = to_hex(top[0]) or ""
-    h2 = to_hex(top[1]) if len(top)>1 else ""
-    if not h1 and not h2: return ""
-    if h1 and not h2: return h1
-    if h1 == h2: return h1
+    # 显著度降序；显著度相同按器官优先级
+    ordered = sorted(
+        scores.items(),
+        key=lambda kv: (-kv[1], PART_PRIORITY.index(kv[0]) if kv[0] in PART_PRIORITY else 99)
+    )
+    top_parts = [p for p,_ in ordered[:2]]
+    if not top_parts:
+        return ""
+    def part_to_hex(part: str, info: Dict[str,Any]) -> str:
+        # 优先使用模型给的该器官“卦象”，否则用主映射
+        raw = str((info or {}).get("卦象","")).strip()
+        raw = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", raw)
+        if raw in WUXING:
+            return raw
+        return (FACIAL_MAP.get(part) or {}).get("primary","")
+    h1 = part_to_hex(top_parts[0], (face_parts or {}).get(top_parts[0], {}))
+    h2 = part_to_hex(top_parts[1], (face_parts or {}).get(top_parts[1], {})) if len(top_parts)>1 else ""
+    if not h1 and not h2:
+        return ""
+    if h1 and not h2:
+        return h1
+    if h1 == h2:
+        return h1
     return _resolve_two_hex_to_main(h1, h2)
 
+# ---------- 辅助描述 ----------
 def _persona_line(h: str) -> str:
     if not h or h not in WUXING: return ""
     ele = WUXING[h]["element"]; vir = WUXING[h]["virtue"]; sym = BAGUA_SYMBOLS.get(h, "")
     return f"{h}（{ele}·{sym}）：{vir}"
 
 def _pair_relation_phrase(main_ele: str, other_ele: str) -> Tuple[str,str]:
-    if not main_ele or not other_ele: return "", "相并"
-    if main_ele == other_ele: return f"{other_ele}同{main_ele}", "比和"
-    if SHENG.get(other_ele) == main_ele: return f"{other_ele}生{main_ele}", "相生"
-    if KE.get(other_ele) == main_ele:    return f"{other_ele}克{main_ele}", "相克"
+    """返回（pair文字, 关系标签）。other 对 main 的关系：other生main=相生；other克main=相克。"""
+    if not main_ele or not other_ele:
+        return "", "相并"
+    if main_ele == other_ele:
+        return f"{other_ele}同{main_ele}", "比和"
+    if SHENG.get(other_ele) == main_ele:
+        return f"{other_ele}生{main_ele}", "相生"
+    if KE.get(other_ele) == main_ele:
+        return f"{other_ele}克{main_ele}", "相克"
     return f"{other_ele}并{main_ele}", "相并"
 
 # ---------- 组合：八卦类比 ----------
@@ -309,25 +335,24 @@ def _synthesize_combo(hexes: List[str]) -> Tuple[str,str]:
     def wx(h: str) -> str: return (WUXING.get(h) or {}).get("element","")
 
     def rel_phrase(main: str, other: str, which: str) -> Tuple[str,str,str]:
-        """返回（pair文字, 关系, 推理句）"""
-        if not (main in WUXING and other):
+        """返回（pair文字, 关系, 推理句）。which: 'mf' 主-辅 / 'bm' 基-主"""
+        if not (main in WUXING and other in WUXING):
             return "", "", ""
         pair, rel = _pair_relation_phrase(wx(main), wx(other))
-        if not rel: return pair, rel, ""
         if which == "mf":
             reason = {
                 "相生": f"{other}助{main}，主势更顺，长于把握节奏",
-                "相克": f"{main}制{other}，风格紧而不松，须留回旋",
+                "相克": f"{main}制{other}，风格紧而不松，需留回旋",
                 "比和": f"{main}与{other}同气，执行干脆，调性统一",
                 "相并": f"{main}与{other}侧重不同，可分工互补"
-            }[rel]
+            }.get(rel, "")
         else:
             reason = {
                 "相生": f"{other}为基托主，底盘给力，行稳致远",
                 "相克": f"{main}受基牵制，宜辨旧新，以今断事",
                 "比和": f"基与主同频，内外一致，少内耗",
                 "相并": f"基与主各有所长，资源配置需取舍"
-            }[rel]
+            }.get(rel, "")
         return pair, rel, reason
 
     lines: List[str] = []
@@ -340,12 +365,12 @@ def _synthesize_combo(hexes: List[str]) -> Tuple[str,str]:
     if pair_mf: lines.append(f"主与辅（{pair_mf}）{rel_mf}：{rsn_mf}")
     if pair_bm: lines.append(f"基与主（{pair_bm}）{rel_bm}：{rsn_bm}")
 
-    # 综合：依据三卦德性与两条关系生成，不用固定尾句
+    # 综合观（由三卦德性与两条关系合成，不写固定尾句）
     if zh in WUXING:
         seg = [f"以{zh}为纲（{WUXING[zh]['virtue']}）"]
         if sh in WUXING: seg.append(f"辅以{sh}（{WUXING[sh]['virtue']}）")
         if bh in WUXING: seg.append(f"基以{bh}（{WUXING[bh]['virtue']}）")
-        lines.append("综合观：{}".format("，".join(seg)))
+        lines.append("综合观：" + "，".join(seg))
 
     card_title = f"八卦类比（{title}）" if title else "八卦类比"
     return card_title, "\n".join(lines) if lines else "—"
@@ -389,25 +414,24 @@ def _collect_traits_and_merge(ta: Dict[str,Any]) -> Tuple[List[str], Dict[str,An
         hexname = (o.get("卦象") or "").strip()
         hexname = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hexname)
         o["卦象"] = hexname
-        # 经文提示从“解读”末尾拆出；若无，则结合卦+位置+生克关系动态挑选
+
+        # 经文提示：从“解读”尾部拆出；若无，用 _pick_jingwen（已在外层写入 _rel_mf/_rel_bm）
         pure, hint = _extract_jingwen(merged)
         if not hint and hexname:
-            # 取关系标签（供经文选择偏向），没有就给空
-            rel_mf = (o.get("_rel_mf") or "")
-            rel_bm = (o.get("_rel_bm") or "")
-            hint = _pick_jingwen(hexname, key, rel_mf, rel_bm)
+            hint = _pick_jingwen(hexname, key, o.get("_rel_mf",""), o.get("_rel_bm",""))
         o["说明"] = ""
         o["解读"] = pure.strip()
         if hint:
             o["经文提示"] = hint
         o["性格倾向"] = ""
         new_ta[key] = o
+    # 透传其它键
     for k in ta.keys():
         if k not in new_ta:
             new_ta[k] = ta[k]
     return traits, new_ta
 
-# ---------- 事业/感情 ----------
+# ---------- 事业/感情：句子化 ----------
 def _human_status_sentence(s: set, domain: str) -> str:
     lines: List[str] = []
     if domain == "事业":
@@ -462,14 +486,16 @@ def _gen_archetype(hexes: List[str], ta: Dict[str,Any], face_parts: Dict[str,Any
     def pick(h: str) -> List[str]:
         return kw.get(h, [])
 
-    pool = pick(main)[:2] + pick(aux)[:1] + pick(base)[:1]
+    pool: List[str] = []
+    pool += pick(main)[:2] + pick(aux)[:1] + pick(base)[:1]
+    # 融合五官暗示（例：鼻→艮，眼→离/兑；仅轻权重堆叠）
+    if isinstance(face_parts, dict):
+        for info in face_parts.values():
+            hh = str((info or {}).get("卦象","")).strip()
+            hh = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hh)
+            if hh in WUXING:
+                pool += pick(hh)[:1]
 
-    # 融合五官暗示（例如：鼻→艮，眼→离/兑；只做轻权重堆叠）
-    part2hex = [ (info or {}).get("卦象","") for info in (face_parts or {}).values() ]
-    for h in part2hex:
-        pool += pick(h)[:1]
-
-    # 去重取 3 个以内
     seen, words = set(), []
     for p in pool:
         if p and p not in seen:
@@ -478,7 +504,7 @@ def _gen_archetype(hexes: List[str], ta: Dict[str,Any], face_parts: Dict[str,Any
 
     if not words:
         return "气象平衡"
-    # 常见并置
+    # 常见并置优先命名
     combos = [
         ({"主导","亲和"}, "刚柔相济"),
         ({"主导","明晰"}, "明断果决"),
@@ -531,12 +557,31 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
     if not isinstance(meta, dict): meta = {}
     out["meta"] = meta
 
-    # 三分象：合并&清洗
-    ta = meta.get("triple_analysis") or {}
-    _, ta = _collect_traits_and_merge(ta)
+    # ---------- 先从原始 ta 读取卦象，计算关系（供经文挑选用） ----------
+    ta_raw = (meta.get("triple_analysis") or {}).copy()
+    def get_hex_from(obj: Dict[str,Any], key: str) -> str:
+        hx = (obj.get(key) or {}).get("卦象","") if isinstance(obj.get(key), dict) else ""
+        hx = str(hx).strip()
+        hx = re.sub(r"(卦（[^）]*）|卦|[。\.。\s]+)$", "", hx)
+        return hx
+    zh0, sh0, bh0 = get_hex_from(ta_raw,"姿态"), get_hex_from(ta_raw,"神情"), get_hex_from(ta_raw,"面容")
+    def wx(h: str) -> str: return (WUXING.get(h) or {}).get("element","")
+    rel_mf = rel_bm = ""
+    if zh0 in WUXING and sh0 in WUXING:
+        _, rel_mf = _pair_relation_phrase(wx(zh0), wx(sh0))
+    if zh0 in WUXING and bh0 in WUXING:
+        _, rel_bm = _pair_relation_phrase(wx(zh0), wx(bh0))
+    # 把关系提示写回 ta_raw，供 _collect_traits_and_merge 时选经文
+    for k in ["姿态","神情","面容"]:
+        if k in ta_raw and isinstance(ta_raw[k], dict):
+            ta_raw[k]["_rel_mf"] = rel_mf
+            ta_raw[k]["_rel_bm"] = rel_bm
+
+    # ---------- 三分象：合并&清洗（含经文提示动态挑选） ----------
+    traits, ta = _collect_traits_and_merge(ta_raw)
     meta["triple_analysis"] = ta
 
-    # —— 面相的卦象若缺失：由五官推断 —— 
+    # ---------- 面相：若缺卦象→由“五官两强爻”推断 ----------
     fps = meta.get("face_parts") or {}
     if isinstance(ta.get("面容"), dict):
         if not (ta["面容"].get("卦象") or "").strip():
@@ -544,63 +589,56 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
             if infer_hex:
                 ta["面容"]["卦象"] = infer_hex
 
-    # —— 计算关系（供经文提示与八卦类比使用）——
-    hexes = [
-        (ta.get("姿态") or {}).get("卦象",""),
-        (ta.get("神情") or {}).get("卦象",""),
-        (ta.get("面容") or {}).get("卦象",""),
-    ]
-    def wx(h: str) -> str: return (WUXING.get(h) or {}).get("element","")
-    rel_mf = rel_bm = ""
-    if hexes[0] in WUXING and hexes[1]:
-        _, rel_mf = _pair_relation_phrase(wx(hexes[0]), wx(hexes[1]))
-    if hexes[0] in WUXING and hexes[2]:
-        _, rel_bm = _pair_relation_phrase(wx(hexes[0]), wx(hexes[2]))
-    # 将关系写回每个象，供经文挑选
-    for k in ["姿态","神情","面容"]:
-        if k in ta and isinstance(ta[k], dict):
-            ta[k]["_rel_mf"] = rel_mf
-            ta[k]["_rel_bm"] = rel_bm
-
-    # 顶层 sections 用清洗后的文本（不加方括号标签）
+    # ---------- 顶层 sections 用清洗后的文本 ----------
     out["sections"] = {
         "姿态": (ta.get("姿态") or {}).get("解读",""),
         "神情": (ta.get("神情") or {}).get("解读",""),
         "面相": (ta.get("面容") or {}).get("解读",""),
     }
 
-    # 八卦类比卡片（动态推导）
+    # ---------- 八卦类比卡片 ----------
+    hexes = [
+        (ta.get("姿态") or {}).get("卦象",""),
+        (ta.get("神情") or {}).get("卦象",""),
+        (ta.get("面容") or {}).get("卦象",""),
+    ]
     card_title, card_content = _synthesize_combo(hexes)
     meta["combo_title"] = card_title.replace("八卦类比（", "").rstrip("）")
     meta["overview_card"] = {"title": card_title, "summary": card_content}
 
-    # 人格画像：动态生成（防 KeyError）
+    # ---------- 人格画像：动态生成 ----------
     out["archetype"] = _gen_archetype(hexes, ta, fps)
 
-    # 仅保留“图片清晰度”供前端显示
+    # ---------- 仅保留“图片清晰度” ----------
     cb = meta.get("confidence_breakdown") or {"图像清晰度": 0.30}
     meta["confidence_breakdown"] = {"图像清晰度": cb.get("图像清晰度", 0.30)}
 
-    # —— 事业/感情：句子化（状态与建议）——
+    # ---------- 事业/感情：文本（状态/建议） ----------
+    # 优先使用模型填的 meta.domains_status/suggestion；若缺，用规则生成
+    status_text = meta.get("domains_status") or {}
+    suggest_text = meta.get("domains_suggestion") or {}
+
     def _status_sentences(hexes: List[str], domain: str) -> str:
-        base = _human_status_sentence(set([h for h in hexes if h]), domain)  # 已是句段，用；分隔
+        base = _human_status_sentence(set([h for h in hexes if h]), domain)
         return _dedupe_smart(base)
 
     def _suggestion_sentences(hexes: List[str], domain: str) -> str:
         tips = _imperative_suggestion_points(hexes, domain)
         return _dedupe_smart("；".join(tips))
 
-    meta["domains_status_text"] = {
-        "事业": _status_sentences(hexes, "事业"),
-        "感情": _status_sentences(hexes, "感情")
+    meta["domains_status"] = {
+        "事业": _dedupe_smart(_strip_domain_lead(status_text.get("事业",""))) or _status_sentences(hexes,"事业"),
+        "感情": _dedupe_smart(_strip_domain_lead(status_text.get("感情",""))) or _status_sentences(hexes,"感情"),
     }
-    meta["domains_suggestion_text"] = {
-        "事业": _suggestion_sentences(hexes, "事业"),
-        "感情": _suggestion_sentences(hexes, "感情")
+    meta["domains_suggestion"] = {
+        "事业": _dedupe_smart(suggest_text.get("事业","")) or _suggestion_sentences(hexes,"事业"),
+        "感情": _dedupe_smart(suggest_text.get("感情","")) or _suggestion_sentences(hexes,"感情"),
     }
+    # 如果前端需要“词条化”要点，也保留列表
+    meta["domains_status_list"] = {k:_to_points(v) for k,v in meta["domains_status"].items()}
+    meta["domains_suggestion_list"] = {k:_to_points(v) for k,v in meta["domains_suggestion"].items()}
 
-    # 五官文本统一标点（保持原逻辑）
-    fps = meta.get("face_parts") or {}
+    # ---------- 五官文本统一标点 ----------
     if isinstance(fps, dict):
         for k, v in list(fps.items()):
             if not isinstance(v, dict): continue
@@ -612,14 +650,14 @@ def _coerce_output(data: Dict[str,Any]) -> Dict[str,Any]:
             v["解读"] = re.sub(r"[；;]+", "；", expl).strip("；。 ")
     meta["face_parts"] = fps
 
-    # 顶层清洗（保持原逻辑）
+    # ---------- 顶层清洗 ----------
     try:
         out["confidence"] = float(out.get("confidence", 0.0))
     except Exception:
         out["confidence"] = 0.0
     out["summary"] = _clean_text(out.get("summary",""))
 
-    # 最终整体清洗
+    # ---------- 最终整体清洗 ----------
     out = json.loads(json.dumps(out, ensure_ascii=False))
     return out
 
